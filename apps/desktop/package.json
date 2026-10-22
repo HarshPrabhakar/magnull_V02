@@ -1,0 +1,25 @@
+{
+  "name": "magnull-desktop",
+  "version": "0.1.0",
+  "description": "Mag-Null simulation-first RF analysis desktop application",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "electron .",
+    "build:frontend": "npm --prefix frontend run build",
+    "dev": "concurrently -k \"npm:dev:frontend\" \"npm:dev:electron\"",
+    "dev:frontend": "npm --prefix frontend run dev -- --host 127.0.0.1",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 && cross-env MAGNULL_DEV_SERVER_URL=http://127.0.0.1:5173 electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "private": true,
+  "devDependencies": {
+    "concurrently": "^10.0.6",
+    "cross-env": "^10.1.0",
+    "electron": "^45.0.0",
+    "wait-on": "^9.5.1"
+  }
+}
