@@ -31,6 +31,11 @@ button {
   font: inherit;
 }
 
+button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .app-shell {
   display: flex;
   min-height: 100vh;
@@ -101,7 +106,13 @@ button {
   color: #9ba6b9;
   background: transparent;
   text-align: left;
-  cursor: default;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.nav-item:hover:not(.active) {
+  color: #c4cfdf;
+  background: #121a26;
 }
 
 .nav-item.active {
@@ -136,6 +147,7 @@ button {
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--green);
+  box-shadow: 0 0 6px #4bd6a066;
 }
 
 .connection strong,
@@ -316,6 +328,7 @@ button {
   font-size: 23px;
   font-weight: 600;
   letter-spacing: 0.4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .service-status {
