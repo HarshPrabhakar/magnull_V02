@@ -4,17 +4,27 @@ const WS_BASE_URL = 'ws://127.0.0.1:8765'
 
 export type ScenarioId = 'idle' | 'hobby' | 'fpv' | 'multi'
 
+
 export interface SpectrumData {
     mode: 'simulation'
-    scenario: ScenarioId
+    source: 'simulated'
     synthetic: true
-    units: 'relative_dB'
+    sim_version: string
+    scenario: ScenarioId
+    seed: number
+    config_hash: string
     bin_count: number
     frequency_bins: number[]
     power: number[]
     noise_floor: number
-    seed: number
+    units: 'relative_dB'
 }
+
+export interface SpectrumFrame extends SpectrumData {
+    frame_id: number
+    timestamp: string
+}
+
 
 export interface SpectrumFrame extends SpectrumData {
     frame_id: number
