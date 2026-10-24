@@ -1,5 +1,6 @@
 
 const API_BASE_URL = 'http://127.0.0.1:8765'
+const WS_BASE_URL = 'ws://127.0.0.1:8765'
 
 export type ScenarioId = 'idle' | 'hobby' | 'fpv' | 'multi'
 
@@ -13,6 +14,11 @@ export interface SpectrumData {
     power: number[]
     noise_floor: number
     seed: number
+}
+
+export interface SpectrumFrame extends SpectrumData {
+    frame_id: number
+    timestamp: string
 }
 
 export async function fetchSpectrum(
@@ -29,9 +35,7 @@ export async function fetchSpectrum(
     )
 
     if (!response.ok) {
-        throw new Error(
-            `Spectrum request failed: HTTP ${response.status}`,
-        )
+        throw new Error(`Spectrum request failed: HTTP ${response.status}`)
     }
 
     const data: SpectrumData = await response.json()
@@ -46,4 +50,50 @@ export async function fetchSpectrum(
     }
 
     return data
+}
+
+export function connectSpectrumStream(
+    scenario: ScenarioId,
+    onFrame: (frame: SpectrumFrame) => void,
+    onError: (message: string) => void,
+    seed = 42,
+): WebSocket {
+    const params = new URLSearchParams({
+        scenario,
+        seed: String(seed),
+    })
+
+    const socket = new WebSocket(
+        `${WS_BASE_URL}/ws/spectrum?${params.toString()}`,
+    )
+
+    socket.onmessage = (event: MessageEvent<string>) => {
+        try {
+            const frame = JSON.parse(event.data) as SpectrumFrame
+
+            if (
+                frame.mode !== 'simulation' ||
+                frame.synthetic !== true ||
+                frame.bin_count !== frame.power.length ||
+                frame.bin_count !== frame.frequency_bins.length ||
+                !Number.isInteger(frame.frame_id)
+            ) {
+                throw new Error('Invalid spectrum frame received')
+            }
+
+            onFrame(frame)
+        } catch (error) {
+            onError(
+                error instanceof Error
+                    ? error.message
+                    : 'Unable to process spectrum frame',
+            )
+        }
+    }
+
+    socket.onerror = () => {
+        onError('Spectrum WebSocket connection failed')
+    }
+
+    return socket
 }

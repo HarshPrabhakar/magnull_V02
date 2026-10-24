@@ -1,7 +1,12 @@
-import { useState } from 'react'
-import './App.css'
 
-type ScenarioId = 'idle' | 'hobby' | 'fpv' | 'multi'
+import { useEffect, useRef, useState } from 'react'
+import './App.css'
+import {
+  connectSpectrumStream,
+  type ScenarioId,
+  type SpectrumData,
+  type SpectrumFrame,
+} from './services/spectrumApi'
 
 const scenarios: { id: ScenarioId; name: string; description: string }[] = [
   { id: 'idle', name: 'Idle Environment', description: 'Background noise only' },
@@ -10,10 +15,113 @@ const scenarios: { id: ScenarioId; name: string; description: string }[] = [
   { id: 'multi', name: 'Multiple Sources', description: 'Overlapping synthetic signals' },
 ]
 
-
 function App() {
   const [selectedScenario, setSelectedScenario] = useState<ScenarioId>('idle')
   const [simulationRunning, setSimulationRunning] = useState(false)
+  const [spectrum, setSpectrum] = useState<SpectrumData | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [backendConnected, setBackendConnected] = useState(false)
+
+  const socketRef = useRef<WebSocket | null>(null)
+
+  function stopSimulation() {
+    const socket = socketRef.current
+    socketRef.current = null
+
+    if (socket) {
+      socket.close()
+    }
+
+    setSimulationRunning(false)
+    setLoading(false)
+  }
+
+  function startSimulation() {
+    // Close an earlier connection before opening a new one.
+    const previousSocket = socketRef.current
+    socketRef.current = null
+
+    if (previousSocket) {
+      previousSocket.close()
+    }
+
+    setSimulationRunning(true)
+    setLoading(true)
+    setError(null)
+    setSpectrum(null)
+    setBackendConnected(false)
+
+    const socket = connectSpectrumStream(
+      selectedScenario,
+      (frame: SpectrumFrame) => {
+        // Ignore frames from a connection that is no longer active.
+        if (socketRef.current !== socket) return
+
+        setSpectrum(frame)
+        setLoading(false)
+        setBackendConnected(true)
+      },
+      (message: string) => {
+        if (socketRef.current !== socket) return
+
+        setError(message)
+        setLoading(false)
+        setBackendConnected(false)
+        setSimulationRunning(false)
+
+        socketRef.current = null
+        socket.close()
+      },
+    )
+
+    socketRef.current = socket
+
+    socket.onopen = () => {
+      if (socketRef.current === socket) {
+        setBackendConnected(true)
+      }
+    }
+
+    socket.onclose = () => {
+      if (socketRef.current === socket) {
+        socketRef.current = null
+        setBackendConnected(false)
+        setLoading(false)
+        setSimulationRunning(false)
+      }
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      const socket = socketRef.current
+      socketRef.current = null
+
+      if (socket) {
+        socket.close()
+      }
+    }
+  }, [])
+
+  const selectedScenarioName =
+    scenarios.find((scenario) => scenario.id === selectedScenario)?.name ??
+    selectedScenario
+
+  const chartPoints = spectrum
+    ? spectrum.power
+      .map((value, index) => {
+        const x =
+          (index / Math.max(spectrum.power.length - 1, 1)) * 1000
+
+        // Map the displayed -80 to 0 relative power range onto the chart.
+        const y = ((0 - value) / 80) * 300
+
+        return `${x.toFixed(2)},${Math.max(0, Math.min(300, y)).toFixed(2)}`
+      })
+      .join(' ')
+    : ''
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -27,23 +135,39 @@ function App() {
 
         <div className="nav-label">WORKSPACE</div>
         <nav className="navigation">
-          <button className="nav-item active">▦ <span>Overview</span></button>
-          <button className="nav-item">〰 <span>Spectrum</span></button>
-          <button className="nav-item">▤ <span>Waterfall</span></button>
-          <button className="nav-item">◎ <span>Detections</span></button>
-          <button className="nav-item">⌖ <span>Tracking</span></button>
+          <button type="button" className="nav-item active">
+            ▦ <span>Overview</span>
+          </button>
+          <button type="button" className="nav-item">
+            〰 <span>Spectrum</span>
+          </button>
+          <button type="button" className="nav-item">
+            ▤ <span>Waterfall</span>
+          </button>
+          <button type="button" className="nav-item">
+            ◎ <span>Detections</span>
+          </button>
+          <button type="button" className="nav-item">
+            ⌖ <span>Tracking</span>
+          </button>
         </nav>
 
         <div className="sidebar-bottom">
           <div className="nav-label">SYSTEM</div>
-          <button className="nav-item">⚙ <span>Settings</span></button>
+          <button type="button" className="nav-item">
+            ⚙ <span>Settings</span>
+          </button>
+
           <div className="connection">
             <span className="status-dot" />
             <div>
               <strong>LOCAL SIMULATOR</strong>
-              <small>Desktop interface ready</small>
+              <small>
+                {backendConnected ? 'Backend connected' : 'Desktop interface ready'}
+              </small>
             </div>
           </div>
+
           <div className="version">MAG-NULL · VERSION 0.1.0</div>
         </div>
       </aside>
@@ -54,6 +178,7 @@ function App() {
             <div className="breadcrumb">WORKSPACE / OVERVIEW</div>
             <h2>Mission Overview</h2>
           </div>
+
           <div className="mode-badge">
             <span className="status-dot" />
             SIMULATION MODE
@@ -69,6 +194,7 @@ function App() {
               and evaluate simulated detection results.
             </p>
           </div>
+
           <div className="radar-mark" aria-hidden="true">
             <div className="radar-ring ring-one" />
             <div className="radar-ring ring-two" />
@@ -84,8 +210,13 @@ function App() {
               <span className="eyebrow">SCENARIO MANAGEMENT</span>
               <h3>Simulation Control Center</h3>
             </div>
+
             <span className="panel-tag">
-              {simulationRunning ? 'RUNNING' : 'STANDBY'}
+              {loading
+                ? 'CONNECTING'
+                : simulationRunning
+                  ? 'RUNNING'
+                  : 'STANDBY'}
             </span>
           </div>
 
@@ -115,16 +246,14 @@ function App() {
 
           <div className="simulation-actions">
             <div className="selected-scenario">
-              Selected: <strong>
-                {scenarios.find((scenario) => scenario.id === selectedScenario)?.name}
-              </strong>
+              Selected: <strong>{selectedScenarioName}</strong>
             </div>
 
             {!simulationRunning ? (
               <button
                 type="button"
                 className="simulation-button start-button"
-                onClick={() => setSimulationRunning(true)}
+                onClick={startSimulation}
               >
                 ▶ Start Simulation
               </button>
@@ -132,39 +261,63 @@ function App() {
               <button
                 type="button"
                 className="simulation-button stop-button"
-                onClick={() => setSimulationRunning(false)}
+                onClick={stopSimulation}
               >
                 ■ Stop Simulation
               </button>
             )}
           </div>
 
-          <p className="simulation-notice">
-            Frontend demonstration only. No RF hardware or Python simulation
-            engine is connected yet.
+          <p className="simulation-notice" role="status" aria-live="polite">
+            {error
+              ? `Backend error: ${error}`
+              : loading
+                ? 'Connecting to the synthetic spectrum stream…'
+                : spectrum
+                  ? `Receiving live synthetic frames for ${selectedScenarioName}. Frame ${'frame_id' in spectrum ? (spectrum as SpectrumFrame).frame_id : 0}.`
+                  : 'Simulation-only data. No RF hardware is connected.'}
           </p>
         </section>
 
         <section className="metrics-grid">
           <article className="metric-card">
             <span className="metric-label">SIMULATION STATUS</span>
-            <strong className="metric-value">STANDBY</strong>
-            <span className="metric-note">No scenario running</span>
+            <strong className="metric-value">
+              {loading
+                ? 'CONNECTING'
+                : simulationRunning
+                  ? 'RUNNING'
+                  : 'STANDBY'}
+            </strong>
+            <span className="metric-note">
+              {spectrum ? `Scenario: ${spectrum.scenario}` : 'No spectrum loaded'}
+            </span>
           </article>
+
           <article className="metric-card">
             <span className="metric-label">ACTIVE SCENARIOS</span>
-            <strong className="metric-value">00</strong>
+            <strong className="metric-value">
+              {simulationRunning ? '01' : '00'}
+            </strong>
             <span className="metric-note">Synthetic environment</span>
           </article>
+
           <article className="metric-card">
             <span className="metric-label">DETECTIONS</span>
             <strong className="metric-value">00</strong>
-            <span className="metric-note">Awaiting analysis</span>
+            <span className="metric-note">Detection pipeline not implemented</span>
           </article>
+
           <article className="metric-card">
             <span className="metric-label">BACKEND SERVICE</span>
-            <strong className="metric-value service-status">NOT CONNECTED</strong>
-            <span className="metric-note">Integration pending</span>
+            <strong className="metric-value service-status">
+              {backendConnected ? 'CONNECTED' : 'NOT CONNECTED'}
+            </strong>
+            <span className="metric-note">
+              {backendConnected
+                ? 'WebSocket stream active'
+                : 'Awaiting a successful connection'}
+            </span>
           </article>
         </section>
 
@@ -175,7 +328,10 @@ function App() {
                 <span className="eyebrow">SIGNAL MONITOR</span>
                 <h3>Spectrum Analysis</h3>
               </div>
-              <span className="panel-tag">PREVIEW</span>
+
+              <span className="panel-tag">
+                {spectrum ? 'LIVE SIMULATION' : 'PREVIEW'}
+              </span>
             </div>
 
             <div className="chart-placeholder">
@@ -186,22 +342,72 @@ function App() {
                 <span>-60 dB</span>
                 <span>-80 dB</span>
               </div>
+
               <div className="chart-area">
                 <div className="chart-grid-lines">
-                  <i /><i /><i /><i /><i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                  <i />
                 </div>
-                <div className="empty-chart">
-                  <span>⌁</span>
-                  <strong>Awaiting signal data</strong>
-                  <small>Start a simulation to populate this panel</small>
-                </div>
+
+                {spectrum ? (
+                  <svg
+                    viewBox="0 0 1000 300"
+                    preserveAspectRatio="none"
+                    role="img"
+                    aria-label={`Synthetic spectrum for ${spectrum.scenario}, ${spectrum.bin_count} bins`}
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      width: '100%',
+                      height: '100%',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <polyline
+                      points={chartPoints}
+                      fill="none"
+                      stroke="#42c8ff"
+                      strokeWidth="2"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  </svg>
+                ) : (
+                  <div className="empty-chart">
+                    <span>{loading ? '…' : error ? '!' : '⌁'}</span>
+                    <strong>
+                      {loading
+                        ? 'Connecting to spectrum stream'
+                        : error
+                          ? 'Spectrum stream unavailable'
+                          : 'Awaiting signal data'}
+                    </strong>
+                    <small>
+                      {error
+                        ? 'Check the Python backend and try again'
+                        : loading
+                          ? 'Waiting for the first frame'
+                          : 'Start a simulation to populate this panel'}
+                    </small>
+                  </div>
+                )}
               </div>
             </div>
+
             <div className="chart-axis">
               <span>Low frequency</span>
               <span>Frequency →</span>
               <span>High frequency</span>
             </div>
+
+            {spectrum && (
+              <p className="simulation-notice">
+                Synthetic relative power · Seed {spectrum.seed} · Not calibrated
+                RF measurements
+              </p>
+            )}
           </article>
 
           <article className="panel waterfall-panel">
@@ -210,8 +416,10 @@ function App() {
                 <span className="eyebrow">TIME SERIES</span>
                 <h3>Waterfall</h3>
               </div>
+
               <span className="panel-tag">LIVE VIEW PENDING</span>
             </div>
+
             <div className="waterfall-empty">
               <div className="waterfall-lines" />
               <div className="waterfall-message">
@@ -220,6 +428,7 @@ function App() {
                 <small>Waiting for the simulation engine</small>
               </div>
             </div>
+
             <div className="waterfall-footer">
               <span>TIME ↓</span>
               <span>FREQUENCY →</span>
@@ -233,8 +442,10 @@ function App() {
               <span className="eyebrow">SYSTEM ACTIVITY</span>
               <h3>Recent Events</h3>
             </div>
+
             <span className="panel-tag">0 EVENTS</span>
           </div>
+
           <div className="empty-events">
             <span>✓</span>
             <div>
@@ -245,7 +456,9 @@ function App() {
         </section>
 
         <footer className="app-footer">
-          <span><span className="status-dot" /> Desktop UI operational</span>
+          <span>
+            <span className="status-dot" /> Desktop UI operational
+          </span>
           <span>SIMULATED DATA ONLY · NOT A REAL RF RECEIVER</span>
         </footer>
       </main>
