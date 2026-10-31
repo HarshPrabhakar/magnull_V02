@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 import {
   connectSpectrumStream,
@@ -6,6 +6,8 @@ import {
   type SpectrumData,
   type SpectrumFrame,
 } from "./services/spectrumApi";
+
+const OpenWorldPage = lazy(() => import("./features/open-world/OpenWorldPage"));
 
 const WATERFALL_ROWS = 20;
 const BAND_START_MHZ = 2400;
@@ -247,6 +249,7 @@ function App() {
     | "Waterfall"
     | "Detections"
     | "Tracking"
+    | "Open World"
     | "Settings";
   const [simulationRunning, setSimulationRunning] = useState(false);
   const [spectrum, setSpectrum] = useState<SpectrumFrame | null>(null);
@@ -411,7 +414,7 @@ function App() {
   return (
     <div
       className={`app-shell console-shell ${activeWorkspace === "Overview" ? "overview-workspace" : ""
-        }`}
+        } ${activeWorkspace === "Open World" ? "open-world-workspace" : ""}`}
     >
       <header className="console-header">
         <div className="console-brand">
@@ -442,6 +445,7 @@ function App() {
             "Waterfall",
             "Detections",
             "Tracking",
+            "Open World",
             "Settings",
           ] as Workspace[]
         ).map((workspace) => (
@@ -805,7 +809,10 @@ function App() {
             </article>
           </aside>
         </main>
-
+      ) : activeWorkspace === "Open World" ? (
+        <Suspense fallback={<main className="open-world-loading">LOADING VIRTUAL WORLD…</main>}>
+          <OpenWorldPage />
+        </Suspense>
       ) : (
         <main className="workspace-page">
           {activeWorkspace === "Spectrum" && (
