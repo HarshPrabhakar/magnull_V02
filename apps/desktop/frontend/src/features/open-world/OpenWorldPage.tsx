@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   OpenWorldScene,
   type CameraCommand,
   type EnvironmentMode,
+  type SceneSettings,
+  type WorldPoint,
 } from "./OpenWorldScene";
+import { terrainHeight } from "./worldMath";
 
 const INITIAL_SEED = 42;
 
@@ -24,6 +27,28 @@ export default function OpenWorldPage() {
     view: "overview",
     revision: 0,
   });
+  const [sceneSettings, setSceneSettings] = useState<SceneSettings>({
+    terrainVisible: true,
+    terrainGrid: true,
+    coordinateGrid: true,
+    roadsVisible: true,
+    buildingsVisible: true,
+    forestVisible: true,
+    lighting: "day",
+    visibilityMeters: 14_000,
+  });
+  const [windSpeed, setWindSpeed] = useState(0);
+  const [destination, setDestination] = useState<WorldPoint>({ x: 3_100, z: 850 });
+  const [destinationPicking, setDestinationPicking] = useState(false);
+  const [inspectedPoint, setInspectedPoint] = useState<WorldPoint | null>(null);
+  const [worldEvents, setWorldEvents] = useState([
+    `World generated from seed ${INITIAL_SEED}`,
+    "Idle: no flight or RF events have been generated",
+  ]);
+
+  const recordWorldEvent = useCallback((message: string) => {
+    setWorldEvents((previous) => [message, ...previous].slice(0, 12));
+  }, []);
 
   const updateSeed = (text: string) => {
     setSeedText(text);
@@ -43,11 +68,40 @@ export default function OpenWorldPage() {
     const nextSeed = randomSeed[0] % 2_147_483_648;
     setSeed(nextSeed);
     setSeedText(String(nextSeed));
+    setInspectedPoint(null);
+    recordWorldEvent(`New terrain generated from seed ${nextSeed}`);
   };
 
   const setCameraView = (view: CameraCommand["view"]) => {
     setCameraCommand((current) => ({ view, revision: current.revision + 1 }));
   };
+
+  const handleTerrainClick = useCallback((point: WorldPoint) => {
+    const roundedPoint = {
+      x: Math.round(point.x / 10) * 10,
+      z: Math.round(point.z / 10) * 10,
+    };
+    setInspectedPoint(roundedPoint);
+
+    if (destinationPicking) {
+      setDestination(roundedPoint);
+      setDestinationPicking(false);
+      recordWorldEvent(
+        `SAFE ZONE-01 moved to X ${roundedPoint.x} m · Z ${roundedPoint.z} m`,
+      );
+    }
+  }, [destinationPicking, recordWorldEvent]);
+
+  const updateSceneSetting = <Key extends keyof SceneSettings>(
+    key: Key,
+    value: SceneSettings[Key],
+  ) => {
+    setSceneSettings((current) => ({ ...current, [key]: value }));
+  };
+
+  const destinationElevation = Math.round(
+    terrainHeight(destination.x, destination.z, seed),
+  );
 
   return (
     <main className="open-world-page">
@@ -110,6 +164,54 @@ export default function OpenWorldPage() {
             <MetricRow label="WORLD SEED" value={String(seed)} />
           </div>
 
+          <div className="open-world-section-divider">WORLD LAYERS</div>
+          <div className="open-world-toggle-list">
+            <label><input type="checkbox" checked={sceneSettings.terrainVisible} onChange={(event) => updateSceneSetting("terrainVisible", event.target.checked)} /> Terrain surface</label>
+            <label><input type="checkbox" checked={sceneSettings.terrainGrid} onChange={(event) => updateSceneSetting("terrainGrid", event.target.checked)} /> Terrain wireframe</label>
+            <label><input type="checkbox" checked={sceneSettings.coordinateGrid} onChange={(event) => updateSceneSetting("coordinateGrid", event.target.checked)} /> Coordinate grid</label>
+            <label><input type="checkbox" checked={sceneSettings.roadsVisible} onChange={(event) => updateSceneSetting("roadsVisible", event.target.checked)} /> Roads</label>
+            <label><input type="checkbox" checked={sceneSettings.buildingsVisible} onChange={(event) => updateSceneSetting("buildingsVisible", event.target.checked)} /> Buildings</label>
+            <label><input type="checkbox" checked={sceneSettings.forestVisible} onChange={(event) => updateSceneSetting("forestVisible", event.target.checked)} /> Forests</label>
+          </div>
+
+          <div className="open-world-section-divider">ENVIRONMENT</div>
+          <div className="open-world-field open-world-lighting">
+            <span>Lighting</span>
+            <div className="open-world-segmented" role="group" aria-label="Lighting">
+              <button type="button" className={sceneSettings.lighting === "day" ? "selected" : ""} aria-pressed={sceneSettings.lighting === "day"} onClick={() => updateSceneSetting("lighting", "day")}>DAYLIGHT</button>
+              <button type="button" className={sceneSettings.lighting === "night" ? "selected" : ""} aria-pressed={sceneSettings.lighting === "night"} onClick={() => updateSceneSetting("lighting", "night")}>NIGHT</button>
+            </div>
+          </div>
+          <label className="open-world-range-field">
+            <span>Visibility <strong>{(sceneSettings.visibilityMeters / 1_000).toFixed(0)} km</strong></span>
+            <input type="range" min={3_000} max={20_000} step={500} value={sceneSettings.visibilityMeters} onChange={(event) => updateSceneSetting("visibilityMeters", Number(event.target.value))} />
+          </label>
+          <label className="open-world-range-field">
+            <span>Virtual wind <strong>{windSpeed} m/s</strong></span>
+            <input type="range" min={0} max={20} step={1} value={windSpeed} onChange={(event) => setWindSpeed(Number(event.target.value))} />
+            <small>Stored for the next flight scenario; no motion is active.</small>
+          </label>
+
+          <div className="open-world-section-divider">DESTINATION · SAFE ZONE-01</div>
+          <div className="open-world-config-facts">
+            <MetricRow label="X / Z" value={`${destination.x} / ${destination.z} m`} />
+            <MetricRow label="ELEVATION" value={`${destinationElevation} m`} />
+            <MetricRow label="ZONE RADIUS" value="150 m" />
+          </div>
+          <button
+            className={`open-world-secondary-action ${destinationPicking ? "selecting" : ""}`}
+            type="button"
+            aria-pressed={destinationPicking}
+            onClick={() => setDestinationPicking((current) => !current)}
+          >
+            {destinationPicking ? "CANCEL DESTINATION PICK" : "SELECT DESTINATION"}
+          </button>
+          <div className="open-world-coordinate-readout">
+            {inspectedPoint
+              ? `INSPECTED · X ${inspectedPoint.x} m · Z ${inspectedPoint.z} m`
+              : "Click terrain to inspect virtual coordinates."}
+          </div>
+
           <div className="open-world-section-divider">SCENARIO LIFECYCLE</div>
           <button className="open-world-primary-action" type="button" disabled title="Flight simulation is introduced in the next phase">
             ▶ START SIMULATION
@@ -121,7 +223,7 @@ export default function OpenWorldPage() {
           </div>
           <p className="open-world-hint">Flight remains inactive while the terrain and camera foundation is being built.</p>
 
-          <button className="open-world-secondary-action" type="button" onClick={generateEnvironment}>
+          <button className="open-world-secondary-action open-world-generate-action" type="button" onClick={generateEnvironment}>
             GENERATE NEW ENVIRONMENT
           </button>
           <div className="open-world-provenance">SIMULATED DATA · UNCLASSIFIED · DEMONSTRATION SYSTEM</div>
@@ -132,8 +234,16 @@ export default function OpenWorldPage() {
             <span>3D OPEN-WORLD ENVIRONMENT</span>
             <span>SEED {seed} · VIRTUAL METRES</span>
           </div>
-          <div className="open-world-canvas-wrap">
-            <OpenWorldScene seed={seed} mode={mode} cameraCommand={cameraCommand} />
+          <div className={`open-world-canvas-wrap ${destinationPicking ? "pick-destination-mode" : ""}`}>
+            <OpenWorldScene
+              seed={seed}
+              mode={mode}
+              cameraCommand={cameraCommand}
+              settings={sceneSettings}
+              destinationPoint={destination}
+              onTerrainClick={handleTerrainClick}
+            />
+            {destinationPicking && <div className="open-world-pick-hint">CLICK A TERRAIN POINT TO MOVE SAFE ZONE-01</div>}
             <div className="open-world-camera-tools" aria-label="Camera controls">
               <span className="camera-tool-hint">DRAG ORBIT · RIGHT-DRAG PAN · WHEEL ZOOM</span>
               <button type="button" onClick={() => setCameraView("overview")}>RESET VIEW</button>
@@ -170,8 +280,12 @@ export default function OpenWorldPage() {
 
           <section className="open-world-event-section">
             <div className="open-world-panel-heading">WORLD EVENT LOG</div>
-            <div className="open-world-event-row"><time>READY</time><span>World generated from seed {seed}</span></div>
-            <div className="open-world-event-row"><time>IDLE</time><span>No flight or RF events have been generated</span></div>
+            {worldEvents.map((message, index) => (
+              <div className="open-world-event-row" key={`${index}-${message}`}>
+                <time>{index === 0 ? "CONFIG" : "WORLD"}</time>
+                <span>{message}</span>
+              </div>
+            ))}
           </section>
         </aside>
 

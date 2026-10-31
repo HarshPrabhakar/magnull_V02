@@ -2,8 +2,20 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls, Sky } from "@react-three/drei";
 import * as THREE from "three";
+import { terrainHeight } from "./worldMath";
 
 export type EnvironmentMode = "technical" | "realistic";
+export type WorldPoint = { x: number; z: number };
+export type SceneSettings = {
+  terrainVisible: boolean;
+  terrainGrid: boolean;
+  coordinateGrid: boolean;
+  roadsVisible: boolean;
+  buildingsVisible: boolean;
+  forestVisible: boolean;
+  lighting: "day" | "night";
+  visibilityMeters: number;
+};
 export type CameraCommand = {
   view: "overview" | "top-down";
   revision: number;
@@ -11,19 +23,6 @@ export type CameraCommand = {
 
 const WORLD_SIZE_METERS = 12_000;
 const TERRAIN_SEGMENTS = 64;
-
-function terrainHeight(x: number, z: number, seed: number): number {
-  const phase = (seed % 4096) * 0.0017;
-  const ridge = Math.sin(x * 0.00058 + phase) * Math.cos(z * 0.00047 - phase);
-  const hills = Math.sin((x + z) * 0.00024 + phase * 1.7) * 0.58;
-  const valley = Math.sin((x - z) * 0.00019 - phase * 0.8) * 0.34;
-  const peakX = Math.sin(phase * 1.3) * 2_500;
-  const peakZ = Math.cos(phase * 0.9) * 2_700;
-  const peakDistance = Math.hypot(x - peakX, z - peakZ);
-  const peak = Math.max(0, 1 - peakDistance / 3_600) ** 2 * 780;
-  const farPeak = Math.max(0, 1 - Math.hypot(x + 3_100, z - 2_100) / 2_700) ** 2 * 520;
-  return 90 + ridge * 330 + hills * 230 + valley * 125 + peak + farPeak;
-}
 
 function createTerrainGeometry(seed: number): THREE.PlaneGeometry {
   const geometry = new THREE.PlaneGeometry(
@@ -71,7 +70,17 @@ function seededPositions(seed: number, count: number, spread: number) {
   }));
 }
 
-function Terrain({ seed, mode }: { seed: number; mode: EnvironmentMode }) {
+function Terrain({
+  seed,
+  mode,
+  settings,
+  onTerrainClick,
+}: {
+  seed: number;
+  mode: EnvironmentMode;
+  settings: SceneSettings;
+  onTerrainClick: (point: WorldPoint) => void;
+}) {
   const geometry = useMemo(() => createTerrainGeometry(seed), [seed]);
   const technical = mode === "technical";
 
@@ -80,11 +89,16 @@ function Terrain({ seed, mode }: { seed: number; mode: EnvironmentMode }) {
       geometry={geometry}
       rotation={[-Math.PI / 2, 0, 0]}
       receiveShadow={false}
+      visible={settings.terrainVisible}
+      onClick={(event) => {
+        event.stopPropagation();
+        onTerrainClick({ x: event.point.x, z: event.point.z });
+      }}
     >
       <meshStandardMaterial
         color={technical ? "#1b9c91" : "#ffffff"}
         vertexColors={!technical}
-        wireframe={technical}
+        wireframe={settings.terrainGrid}
         transparent={technical}
         opacity={technical ? 0.82 : 1}
         roughness={0.94}
@@ -175,12 +189,18 @@ function Forest({ seed }: { seed: number }) {
   );
 }
 
-function WorldMarkers({ seed }: { seed: number }) {
+function WorldMarkers({
+  seed,
+  destinationPoint,
+}: {
+  seed: number;
+  destinationPoint: WorldPoint;
+}) {
   const spawn = new THREE.Vector3(-3_200, terrainHeight(-3_200, -700, seed), -700);
   const destination = new THREE.Vector3(
-    3_100,
-    terrainHeight(3_100, 850, seed),
-    850,
+    destinationPoint.x,
+    terrainHeight(destinationPoint.x, destinationPoint.z, seed),
+    destinationPoint.z,
   );
 
   return (
@@ -267,11 +287,23 @@ export function OpenWorldScene({
   seed,
   mode,
   cameraCommand,
+  settings,
+  destinationPoint,
+  onTerrainClick,
 }: {
   seed: number;
   mode: EnvironmentMode;
   cameraCommand: CameraCommand;
+  settings: SceneSettings;
+  destinationPoint: WorldPoint;
+  onTerrainClick: (point: WorldPoint) => void;
 }) {
+  const night = settings.lighting === "night";
+  const background = night
+    ? "#02060c"
+    : mode === "technical"
+      ? "#040b12"
+      : "#667c80";
   return (
     <Canvas
       camera={{ position: [4_600, 5_000, 5_400], fov: 42, near: 10, far: 30_000 }}
@@ -280,14 +312,20 @@ export function OpenWorldScene({
       gl={{ antialias: true, powerPreference: "low-power", alpha: false }}
       className="open-world-canvas"
     >
-      <color attach="background" args={[mode === "technical" ? "#040b12" : "#17242a"]} />
-      <fog attach="fog" args={[mode === "technical" ? "#07121a" : "#9aa9a0", 6_500, 17_500]} />
-      <ambientLight intensity={mode === "technical" ? 0.6 : 1.1} />
-      <directionalLight position={[-3_000, 7_000, 2_000]} intensity={mode === "technical" ? 1.1 : 2.2} />
-      {mode === "realistic" && <Sky sunPosition={[4_000, 5_000, -2_000]} />}
+      <color attach="background" args={[background]} />
+      <fog
+        attach="fog"
+        args={[background, Math.min(4_500, settings.visibilityMeters * 0.45), settings.visibilityMeters]}
+      />
+      <ambientLight intensity={night ? 0.18 : mode === "technical" ? 0.6 : 1.1} />
+      <directionalLight
+        position={night ? [1_000, 5_000, -3_000] : [-3_000, 7_000, 2_000]}
+        intensity={night ? 0.35 : mode === "technical" ? 1.1 : 2.2}
+      />
+      {mode === "realistic" && !night && <Sky sunPosition={[4_000, 5_000, -2_000]} />}
 
-      <Terrain seed={seed} mode={mode} />
-      <Grid
+      <Terrain seed={seed} mode={mode} settings={settings} onTerrainClick={onTerrainClick} />
+      {settings.coordinateGrid && <Grid
         position={[0, -150, 0]}
         args={[WORLD_SIZE_METERS, WORLD_SIZE_METERS]}
         cellSize={500}
@@ -299,11 +337,24 @@ export function OpenWorldScene({
         fadeDistance={11_000}
         fadeStrength={1.5}
         infiniteGrid={false}
-      />
-      <WorldRoad seed={seed} mode={mode} />
-      <Buildings seed={seed} mode={mode} />
-      {mode === "realistic" && <Forest seed={seed} />}
-      <WorldMarkers seed={seed} />
+      />}
+      {!settings.terrainVisible && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, -800, 0]}
+          onClick={(event) => {
+            event.stopPropagation();
+            onTerrainClick({ x: event.point.x, z: event.point.z });
+          }}
+        >
+          <planeGeometry args={[WORLD_SIZE_METERS, WORLD_SIZE_METERS]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
+        </mesh>
+      )}
+      {settings.roadsVisible && <WorldRoad seed={seed} mode={mode} />}
+      {settings.buildingsVisible && <Buildings seed={seed} mode={mode} />}
+      {mode === "realistic" && settings.forestVisible && <Forest seed={seed} />}
+      <WorldMarkers seed={seed} destinationPoint={destinationPoint} />
 
       <OrbitControls
         makeDefault

@@ -936,7 +936,8 @@
 }
 
 .open-world-page {
-  min-height: calc(100vh - 150px);
+  height: calc(100vh - 138px);
+  min-height: 0;
   padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
@@ -993,10 +994,10 @@
 
 .open-world-layout {
   flex: 1;
-  min-height: 570px;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(205px, 0.78fr) minmax(420px, 2.65fr) minmax(255px, 0.92fr);
-  grid-template-rows: minmax(390px, 1fr) 124px;
+  grid-template-rows: minmax(0, 1fr) 124px;
   gap: 8px;
 }
 
@@ -1160,9 +1161,18 @@
 }
 
 .open-world-secondary-action {
-  margin-top: auto;
+  margin: 6px 9px;
   border-color: #28605b;
   color: #7eb5a8;
+}
+
+.open-world-generate-action {
+  margin-top: auto;
+}
+
+.open-world-secondary-action.selecting {
+  border-color: #dfa83e;
+  color: #ffd17a;
 }
 
 .open-world-provenance {
@@ -1171,6 +1181,64 @@
   font-size: 7px;
   line-height: 1.4;
   text-align: center;
+}
+
+.open-world-toggle-list {
+  display: grid;
+  gap: 7px;
+  padding: 6px 10px 9px;
+}
+
+.open-world-toggle-list label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #9bb0bf;
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.open-world-toggle-list input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #00c7aa;
+}
+
+.open-world-range-field {
+  display: grid;
+  gap: 6px;
+  padding: 7px 10px;
+  color: #9bb0bf;
+  font-size: 8px;
+}
+
+.open-world-range-field span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.open-world-range-field strong {
+  color: #c1d1dc;
+  font-weight: 500;
+}
+
+.open-world-range-field input {
+  width: 100%;
+  accent-color: #00c7aa;
+}
+
+.open-world-range-field small {
+  color: #60798c;
+  line-height: 1.45;
+}
+
+.open-world-coordinate-readout {
+  padding: 0 10px 9px;
+  color: #6ca79c;
+  font-size: 7px;
+  line-height: 1.5;
 }
 
 .open-world-view {
@@ -1209,6 +1277,27 @@
   width: 100%;
   height: 100%;
   touch-action: none;
+}
+
+.pick-destination-mode,
+.pick-destination-mode .open-world-canvas {
+  cursor: crosshair;
+}
+
+.open-world-pick-hint {
+  position: absolute;
+  top: 48px;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  padding: 8px 11px;
+  background: rgb(3 9 15 / 90%);
+  border: 1px solid #dfa83e;
+  color: #ffd17a;
+  font-size: 8px;
+  letter-spacing: 0.8px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .open-world-camera-tools {
@@ -1353,6 +1442,7 @@
 
 @media (max-width: 900px) {
   .open-world-page {
+    height: auto;
     min-height: auto;
   }
 
@@ -1366,6 +1456,7 @@
   }
 
   .open-world-layout {
+    min-height: 570px;
     grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.3fr);
     grid-template-rows: minmax(440px, 1fr) 220px 125px;
   }
