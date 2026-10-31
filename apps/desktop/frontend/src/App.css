@@ -304,7 +304,7 @@
   background: #020512;
 }
 
-.waterfall-svg {
+.waterfall-canvas {
   display: block;
   width: 100%;
   height: 100%;
@@ -795,4 +795,129 @@
 .workspace-tab:focus-visible {
   outline: 1px solid var(--console-green);
   outline-offset: -3px;
+}
+
+/* Dedicated workspaces use normal document flow; the chart empty state above
+   remains absolutely positioned only inside its chart container. */
+.workspace-page {
+  min-height: calc(100vh - 152px);
+  padding: 18px;
+}
+
+.workspace-content {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  width: min(100%, 1600px);
+  margin: 0 auto;
+}
+
+.workspace-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 2px;
+}
+
+.workspace-title h2 {
+  margin: 0;
+  color: var(--console-text);
+  font-size: 16px;
+  letter-spacing: 1.2px;
+}
+
+.workspace-title p {
+  margin: 6px 0 0;
+  color: var(--console-muted);
+}
+
+.workspace-badge {
+  padding: 6px 9px;
+  border: 1px solid var(--console-border);
+  color: var(--console-green);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.workspace-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.workspace-metrics > .console-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 82px;
+  padding: 14px;
+  color: var(--console-muted);
+  font-size: 9px;
+  letter-spacing: 0.7px;
+}
+
+.workspace-metrics strong {
+  color: var(--console-green);
+  font-size: 16px;
+}
+
+.workspace-detail {
+  position: relative;
+  min-height: 100px;
+}
+
+.workspace-empty {
+  position: relative;
+  inset: auto;
+  min-height: 150px;
+}
+
+.settings-group {
+  padding-bottom: 8px;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.4fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 38px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #162433;
+}
+
+.settings-row > span {
+  color: var(--console-muted);
+}
+
+.settings-row strong,
+.settings-row code {
+  color: var(--console-text);
+  overflow-wrap: anywhere;
+}
+
+.settings-error {
+  margin: 10px 12px;
+  color: var(--console-red);
+}
+
+@media (max-width: 700px) {
+  .workspace-page {
+    padding: 12px;
+  }
+
+  .workspace-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+}
+
+/* Hide Overview-only panels on dedicated workspaces */
+.app-shell:not(.overview-workspace) .bottom-console {
+  display: none;
 }
