@@ -1792,3 +1792,71 @@
     grid-template-rows: repeat(3, minmax(0, 1fr));
   }
 }
+
+/* Keep the compact console typography, but make its fine labels easier to parse. */
+.open-world-page .open-world-page-header p,
+.open-world-page .open-world-panel-heading,
+.open-world-page .open-world-panel-heading > span,
+.open-world-page .open-world-field small,
+.open-world-page .open-world-metric-row,
+.open-world-page .open-world-section-divider,
+.open-world-page .open-world-hint,
+.open-world-page .open-world-provenance,
+.open-world-page .open-world-toggle-list label,
+.open-world-page .open-world-range-field,
+.open-world-page .open-world-range-field small,
+.open-world-page .open-world-coordinate-readout,
+.open-world-page .open-world-view-heading,
+.open-world-page .camera-tool-hint,
+.open-world-page .open-world-axis,
+.open-world-page .open-world-scene-stamp,
+.open-world-page .open-world-event-row,
+.open-world-page .open-world-chart-heading,
+.open-world-page .open-world-chart-legend,
+.open-world-page .open-world-chart-empty,
+.open-world-page .open-world-compare-heading,
+.open-world-page .open-world-rf-classification,
+.open-world-page .open-world-rf-subheading,
+.open-world-page .open-world-rf-axis,
+.open-world-page .open-world-rf-legend,
+.open-world-page .open-world-occupancy-row,
+.open-world-page .open-world-rf-distributions > div > span {
+  font-weight: 600;
+  text-shadow: 0 0 1px currentColor;
+}
+
+.open-world-page .open-world-status-item,
+.open-world-page .open-world-panel-heading,
+.open-world-page .open-world-section-divider,
+.open-world-page .open-world-view-heading,
+.open-world-page .open-world-chart-heading,
+.open-world-page .open-world-compare-heading,
+.open-world-page .open-world-rf-subheading {
+  color: #a0b7c7;
+  letter-spacing: 0.45px;
+}
+
+.open-world-page .open-world-panel-heading > span,
+.open-world-page .open-world-field small,
+.open-world-page .open-world-metric-row,
+.open-world-page .open-world-hint,
+.open-world-page .open-world-toggle-list label,
+.open-world-page .open-world-range-field,
+.open-world-page .open-world-range-field small,
+.open-world-page .open-world-coordinate-readout,
+.open-world-page .camera-tool-hint,
+.open-world-page .open-world-chart-legend,
+.open-world-page .open-world-chart-empty,
+.open-world-page .open-world-rf-axis,
+.open-world-page .open-world-rf-legend,
+.open-world-page .open-world-occupancy-row,
+.open-world-page .open-world-rf-distributions > div > span {
+  color: #91a9ba;
+}
+
+.open-world-page .open-world-provenance,
+.open-world-page .open-world-event-row time,
+.open-world-page .open-world-chart-legend span:last-child,
+.open-world-page .open-world-rf-legend span:first-child {
+  color: #e0bd70;
+}
