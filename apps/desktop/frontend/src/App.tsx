@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import "./App.css";
 import {
   connectSpectrumStream,
@@ -8,6 +8,32 @@ import {
 } from "./services/spectrumApi";
 
 const OpenWorldPage = lazy(() => import("./features/open-world/OpenWorldPage"));
+
+class OpenWorldErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Open World workspace failed to render", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <main className="open-world-render-error" role="alert">
+          <h2>OPEN WORLD COULD NOT LOAD</h2>
+          <p>The rest of Mag-Null is still available. Check the local simulation service and try again.</p>
+          <pre>{this.state.error.message}</pre>
+          <button type="button" onClick={() => this.setState({ error: null })}>RETRY OPEN WORLD</button>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const WATERFALL_ROWS = 20;
 const BAND_START_MHZ = 2400;
@@ -810,9 +836,11 @@ function App() {
           </aside>
         </main>
       ) : activeWorkspace === "Open World" ? (
-        <Suspense fallback={<main className="open-world-loading">LOADING VIRTUAL WORLD…</main>}>
-          <OpenWorldPage />
-        </Suspense>
+        <OpenWorldErrorBoundary>
+          <Suspense fallback={<main className="open-world-loading">LOADING VIRTUAL WORLD…</main>}>
+            <OpenWorldPage />
+          </Suspense>
+        </OpenWorldErrorBoundary>
       ) : (
         <main className="workspace-page">
           {activeWorkspace === "Spectrum" && (

@@ -38,6 +38,83 @@ export type FlightTelemetry = {
   trajectory_deviation_m: number;
 };
 
+function numberOr(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function pointOr(value: unknown, fallback: FlightTelemetry["position"]) {
+  const point = value && typeof value === "object" ? value as Partial<FlightTelemetry["position"]> : {};
+  return {
+    x: numberOr(point.x, fallback.x),
+    y: numberOr(point.y, fallback.y),
+    z: numberOr(point.z, fallback.z),
+  };
+}
+
+function normalizeTelemetry(value: unknown, fallback: FlightTelemetry): FlightTelemetry {
+  const telemetry = value && typeof value === "object" ? value as Partial<FlightTelemetry> : {};
+  return {
+    position: pointOr(telemetry.position, fallback.position),
+    altitude_m: numberOr(telemetry.altitude_m, fallback.altitude_m),
+    speed_mps: numberOr(telemetry.speed_mps, fallback.speed_mps),
+    vertical_speed_mps: numberOr(telemetry.vertical_speed_mps, fallback.vertical_speed_mps),
+    heading_deg: numberOr(telemetry.heading_deg, fallback.heading_deg),
+    acceleration_mps2: numberOr(telemetry.acceleration_mps2, fallback.acceleration_mps2),
+    distance_remaining_m: numberOr(telemetry.distance_remaining_m, fallback.distance_remaining_m),
+    eta_seconds: typeof telemetry.eta_seconds === "number" ? telemetry.eta_seconds : telemetry.eta_seconds === null ? null : fallback.eta_seconds,
+    trajectory_deviation_m: numberOr(telemetry.trajectory_deviation_m, fallback.trajectory_deviation_m),
+  };
+}
+
+function normalizeFlightState(value: unknown): FlightState {
+  const state = value && typeof value === "object" ? value as Partial<FlightState> : {};
+  const position = pointOr(state.position, { x: 0, y: 0, z: 0 });
+  const groundTruthFallback: FlightTelemetry = {
+    position,
+    altitude_m: numberOr(state.altitude_m),
+    speed_mps: numberOr(state.speed_mps),
+    vertical_speed_mps: numberOr(state.vertical_speed_mps),
+    heading_deg: numberOr(state.heading_deg),
+    acceleration_mps2: numberOr(state.acceleration_mps2),
+    distance_remaining_m: numberOr(state.distance_remaining_m),
+    eta_seconds: typeof state.eta_seconds === "number" ? state.eta_seconds : null,
+    trajectory_deviation_m: numberOr(state.trajectory_deviation_m),
+  };
+  const groundTruth = normalizeTelemetry(state.ground_truth, groundTruthFallback);
+  const status = ["standby", "active", "paused", "stopped", "complete"].includes(state.status ?? "")
+    ? state.status as FlightState["status"]
+    : "standby";
+
+  return {
+    scenario_id: typeof state.scenario_id === "string" ? state.scenario_id : null,
+    drone_id: typeof state.drone_id === "string" ? state.drone_id : null,
+    seed: numberOr(state.seed, 42),
+    sim_version: typeof state.sim_version === "string" ? state.sim_version : "unknown",
+    config_hash: typeof state.config_hash === "string" ? state.config_hash : "",
+    status,
+    sim_time: numberOr(state.sim_time),
+    position,
+    spawn: pointOr(state.spawn, { x: 0, y: 0, z: 0 }),
+    destination: {
+      ...pointOr(state.destination, { x: 0, y: 0, z: 0 }),
+      radius_m: numberOr(state.destination?.radius_m, 150),
+    },
+    speed_mps: groundTruth.speed_mps,
+    heading_deg: groundTruth.heading_deg,
+    distance_remaining_m: groundTruth.distance_remaining_m,
+    distance_travelled_m: numberOr(state.distance_travelled_m),
+    eta_seconds: groundTruth.eta_seconds,
+    altitude_m: groundTruth.altitude_m,
+    vertical_speed_mps: groundTruth.vertical_speed_mps,
+    acceleration_mps2: groundTruth.acceleration_mps2,
+    trajectory_deviation_m: groundTruth.trajectory_deviation_m,
+    ground_truth: groundTruth,
+    estimated_telemetry: normalizeTelemetry(state.estimated_telemetry, groundTruth),
+    estimation_error_m: numberOr(state.estimation_error_m),
+    source: "simulated",
+  };
+}
+
 async function request(path: string, method = "GET", body?: unknown): Promise<FlightState> {
   const response = await fetch(`${API_BASE_URL}/api/v1/open-world/${path}`, {
     method,
@@ -48,7 +125,7 @@ async function request(path: string, method = "GET", body?: unknown): Promise<Fl
     const payload = await response.json().catch(() => null) as { detail?: string } | null;
     throw new Error(payload?.detail ?? `Simulation service returned HTTP ${response.status}`);
   }
-  return await response.json() as FlightState;
+  return normalizeFlightState(await response.json());
 }
 
 export const fetchFlightState = () => request("state");

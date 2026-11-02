@@ -935,6 +935,39 @@
   letter-spacing: 1px;
 }
 
+.open-world-render-error {
+  min-height: 320px;
+  margin: 16px;
+  padding: 24px;
+  background: #070d16;
+  border: 1px solid #563440;
+  color: #b5c7d8;
+}
+
+.open-world-render-error h2 {
+  color: #ff8294;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+
+.open-world-render-error pre {
+  max-width: 100%;
+  overflow: auto;
+  padding: 10px;
+  background: #03060b;
+  color: #d39a79;
+  white-space: pre-wrap;
+}
+
+.open-world-render-error button {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid #2b7168;
+  background: #0d2827;
+  color: #8be0c6;
+  cursor: pointer;
+}
+
 .open-world-page {
   height: calc(100vh - 138px);
   min-height: 0;
