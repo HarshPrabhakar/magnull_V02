@@ -15,6 +15,20 @@ class FlightStartRequest(BaseModel):
     destination_z_m: float = Field(ge=-6_000, le=6_000)
 
 
+class FlightTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    position: dict[str, float]
+    altitude_m: float
+    speed_mps: float
+    vertical_speed_mps: float
+    heading_deg: float
+    acceleration_mps2: float
+    distance_remaining_m: float
+    eta_seconds: float | None
+    trajectory_deviation_m: float
+
+
 class FlightState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,4 +48,10 @@ class FlightState(BaseModel):
     distance_travelled_m: float
     eta_seconds: float | None
     altitude_m: float
+    vertical_speed_mps: float
+    acceleration_mps2: float
+    trajectory_deviation_m: float
+    ground_truth: FlightTelemetry
+    estimated_telemetry: FlightTelemetry
+    estimation_error_m: float
     source: Literal["simulated"]

@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from schemas.open_world import FlightState
 from simulation.open_world import FlightConfig, OpenWorldSimulation
 
 
@@ -78,6 +79,29 @@ def test_flight_completes_inside_destination_zone(monkeypatch):
     assert state["status"] == "complete"
     assert state["distance_remaining_m"] == 0
     assert state["speed_mps"] == 0
+
+
+def test_truth_and_estimated_telemetry_are_consistent_and_eta_pauses(monkeypatch):
+    now = [350.0]
+    monkeypatch.setattr("simulation.open_world.monotonic", lambda: now[0])
+    simulation = OpenWorldSimulation()
+    initial = simulation.start(FlightConfig(spawn_distance_m=1_000, wind_speed_mps=8))
+    FlightState.model_validate(initial)
+
+    now[0] += 1
+    moving = simulation.snapshot()
+    FlightState.model_validate(moving)
+    assert moving["ground_truth"]["position"] == moving["position"]
+    assert moving["ground_truth"]["speed_mps"] == moving["speed_mps"]
+    assert moving["ground_truth"]["distance_remaining_m"] == moving["distance_remaining_m"]
+    assert moving["estimated_telemetry"]["eta_seconds"] is not None
+    assert moving["eta_seconds"] is not None
+    assert moving["estimation_error_m"] > 0
+    assert moving["trajectory_deviation_m"] >= 0
+
+    paused = simulation.pause()
+    assert paused["eta_seconds"] is None
+    assert paused["estimated_telemetry"]["eta_seconds"] is None
 
 
 def test_open_world_api_supports_flight_lifecycle(monkeypatch):

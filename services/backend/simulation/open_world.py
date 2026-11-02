@@ -49,6 +49,8 @@ class OpenWorldSimulation:
         self.distance_travelled = 0.0
         self.speed = 0.0
         self.heading = 0.0
+        self.vertical_speed = 0.0
+        self.acceleration = 0.0
         self._last_tick: float | None = None
         self._config_hash = ""
 
@@ -87,6 +89,8 @@ class OpenWorldSimulation:
         self.position = self.spawn
         self.distance_travelled = 0.0
         self.speed = 0.0
+        self.vertical_speed = 0.0
+        self.acceleration = 0.0
         self.heading = self._heading_to_destination(sx, sz)
         self.sim_time = 0.0
         self.scenario_id = f"OW-{config.seed:08d}-{self._config_hash[:8]}"
@@ -128,6 +132,8 @@ class OpenWorldSimulation:
         self.distance_travelled = 0.0
         self.speed = 0.0
         self.heading = 0.0
+        self.vertical_speed = 0.0
+        self.acceleration = 0.0
         self._last_tick = None
         return self.snapshot()
 
@@ -148,6 +154,8 @@ class OpenWorldSimulation:
         if dt <= 0:
             return
         self.sim_time += dt
+        previous_speed = self.speed
+        previous_altitude = self._altitude_agl()
         self.speed = min(self.config.max_speed_mps, self.speed + 3.0 * dt)
         x, y, z = self.position
         dx = self.config.destination_x_m - x
@@ -174,11 +182,80 @@ class OpenWorldSimulation:
             self.speed = 0.0
             self.status = "complete"
             self._last_tick = None
+        self.acceleration = (self.speed - previous_speed) / dt
+        self.vertical_speed = (self._altitude_agl() - previous_altitude) / dt
+
+    def _altitude_agl(self) -> float:
+        x, y, z = self.position
+        return y - terrain_height(x, z, self.config.seed) if self.drone_id else 0.0
+
+    def _trajectory_deviation(self, x: float, z: float) -> float:
+        sx, _, sz = self.spawn
+        dx = self.config.destination_x_m - sx
+        dz = self.config.destination_z_m - sz
+        length = math.hypot(dx, dz)
+        if length == 0:
+            return 0.0
+        return abs(dx * (sz - z) - (sx - x) * dz) / length
+
+    def _eta(self, distance: float, speed: float) -> float | None:
+        if self.status == "complete":
+            return 0.0
+        if self.status != "active":
+            return None
+        acceleration = 3.0
+        maximum_speed = self.config.max_speed_mps + self.config.wind_speed_mps * 0.15
+        speed = max(0.0, min(speed, maximum_speed))
+        if speed >= maximum_speed:
+            return distance / maximum_speed if maximum_speed > 0 else None
+        distance_to_max = (maximum_speed**2 - speed**2) / (2 * acceleration)
+        if distance <= distance_to_max:
+            return (math.sqrt(speed**2 + 2 * acceleration * distance) - speed) / acceleration
+        time_to_max = (maximum_speed - speed) / acceleration
+        return time_to_max + (distance - distance_to_max) / maximum_speed
+
+    def _telemetry(self, x: float, y: float, z: float, altitude: float, speed: float,
+                   vertical_speed: float, heading: float, acceleration: float,
+                   distance: float, deviation: float) -> dict:
+        return {
+            "position": {"x": round(x, 2), "y": round(y, 2), "z": round(z, 2)},
+            "altitude_m": round(altitude, 2),
+            "speed_mps": round(speed, 2),
+            "vertical_speed_mps": round(vertical_speed, 2),
+            "heading_deg": round(heading % 360, 1),
+            "acceleration_mps2": round(acceleration, 2),
+            "distance_remaining_m": round(distance, 2),
+            "eta_seconds": self._eta(distance, speed),
+            "trajectory_deviation_m": round(deviation, 2),
+        }
 
     def snapshot(self) -> dict:
         self._advance()
         x, y, z = self.position
         distance = math.hypot(self.config.destination_x_m - x, self.config.destination_z_m - z) if self.drone_id else 0.0
+        altitude = self._altitude_agl()
+        deviation = self._trajectory_deviation(x, z) if self.drone_id else 0.0
+        ground_truth = self._telemetry(
+            x, y, z, altitude, self.speed, self.vertical_speed,
+            self.heading, self.acceleration, distance, deviation,
+        )
+        phase = (self.config.seed % 997) * 0.017 + self.sim_time
+        estimated_x = x + math.sin(phase * 0.37) * 2.4 if self.drone_id else x
+        estimated_z = z + math.cos(phase * 0.29) * 1.8 if self.drone_id else z
+        estimated_altitude = max(0.0, altitude + math.sin(phase * 0.41) * 0.8)
+        estimated_y = terrain_height(estimated_x, estimated_z, self.config.seed) + estimated_altitude if self.drone_id else y
+        estimated_speed = max(0.0, self.speed + math.sin(phase * 0.53) * 0.25) if self.drone_id else 0.0
+        estimated_heading = (self.heading + math.sin(phase * 0.31) * 1.4) % 360 if self.drone_id else self.heading
+        estimated_vertical_speed = self.vertical_speed + math.cos(phase * 0.41) * 0.08 if self.drone_id else 0.0
+        estimated_acceleration = self.acceleration + math.cos(phase * 0.53) * 0.12 if self.drone_id else 0.0
+        estimated_distance = math.hypot(self.config.destination_x_m - estimated_x, self.config.destination_z_m - estimated_z) if self.drone_id else 0.0
+        estimated_deviation = self._trajectory_deviation(estimated_x, estimated_z) if self.drone_id else 0.0
+        estimated_telemetry = self._telemetry(
+            estimated_x, estimated_y, estimated_z, estimated_altitude,
+            estimated_speed, estimated_vertical_speed, estimated_heading,
+            estimated_acceleration, estimated_distance, estimated_deviation,
+        )
+        position_error = math.sqrt((estimated_x - x) ** 2 + (estimated_y - y) ** 2 + (estimated_z - z) ** 2) if self.drone_id else 0.0
         return {
             "scenario_id": self.scenario_id,
             "drone_id": self.drone_id,
@@ -194,7 +271,13 @@ class OpenWorldSimulation:
             "heading_deg": round(self.heading, 1),
             "distance_remaining_m": round(distance, 2),
             "distance_travelled_m": round(self.distance_travelled, 2),
-            "eta_seconds": round(distance / self.speed, 1) if self.speed > 0 else None,
-            "altitude_m": round(y - terrain_height(x, z, self.config.seed), 2) if self.drone_id else 0.0,
+            "eta_seconds": ground_truth["eta_seconds"],
+            "altitude_m": round(altitude, 2),
+            "vertical_speed_mps": round(self.vertical_speed, 2),
+            "acceleration_mps2": round(self.acceleration, 2),
+            "trajectory_deviation_m": round(deviation, 2),
+            "ground_truth": ground_truth,
+            "estimated_telemetry": estimated_telemetry,
+            "estimation_error_m": round(position_error, 2),
             "source": "simulated",
         }

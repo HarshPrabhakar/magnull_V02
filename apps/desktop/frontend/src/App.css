@@ -997,7 +997,7 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(205px, 0.78fr) minmax(420px, 2.65fr) minmax(255px, 0.92fr);
-  grid-template-rows: minmax(0, 1fr) 124px;
+  grid-template-rows: minmax(0, 1fr) 204px;
   gap: 8px;
 }
 
@@ -1407,27 +1407,101 @@
 .open-world-bottom {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: 1fr 1fr 1.25fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: 8px;
   min-height: 0;
 }
 
-.open-world-chart-placeholder {
+.open-world-telemetry-chart {
   position: relative;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  padding: 7px 9px 5px;
+  background: #070d16;
+  border: 1px solid #1b3040;
 }
 
-.open-world-chart-placeholder > span {
+.open-world-chart-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  color: #7892a7;
+  font-size: 8px;
+  letter-spacing: 0.7px;
+}
+
+.open-world-chart-heading strong {
+  color: #9bd9c5;
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.open-world-telemetry-chart svg {
+  width: 100%;
+  min-height: 0;
   flex: 1;
+  margin-top: 4px;
+}
+
+.open-world-telemetry-chart svg line {
+  stroke: #1b3040;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.open-world-telemetry-chart svg polyline {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.open-world-telemetry-chart .truth-line {
+  stroke: #43d9b8;
+}
+
+.open-world-telemetry-chart .estimate-line {
+  stroke: #ffc45b;
+  stroke-dasharray: 5 4;
+}
+
+.open-world-chart-legend {
+  display: flex;
+  justify-content: space-between;
+  color: #668096;
+  font-size: 7px;
+  letter-spacing: 0.35px;
+}
+
+.open-world-chart-legend span:last-child {
+  color: #b99b62;
+}
+
+.open-world-chart-empty {
   display: grid;
+  flex: 1;
   place-items: center;
   color: #587287;
   font-size: 8px;
 }
 
-.open-world-history-preview {
-  background-image: repeating-linear-gradient(90deg, transparent 0 11px, rgb(23 64 67 / 35%) 12px 13px), linear-gradient(0deg, #08121a, #09141c);
+.open-world-compare-heading {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 8px 2px;
+  padding-top: 7px;
+  border-top: 1px solid #203244;
+  color: #7892a7;
+  font-size: 8px;
+  letter-spacing: 0.8px;
+}
+
+.open-world-compare-heading span {
+  color: #ffc45b;
 }
 
 @media (max-width: 1180px) {
@@ -1458,7 +1532,7 @@
   .open-world-layout {
     min-height: 570px;
     grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1.3fr);
-    grid-template-rows: minmax(440px, 1fr) 220px 125px;
+    grid-template-rows: minmax(440px, 1fr) 220px 250px;
   }
 
   .open-world-config {
@@ -1509,11 +1583,8 @@
   }
 
   .open-world-bottom {
-    min-height: 260px;
+    min-height: 390px;
     grid-template-columns: 1fr 1fr;
-  }
-
-  .open-world-history-preview {
-    grid-column: 1 / -1;
+    grid-template-rows: repeat(3, minmax(0, 1fr));
   }
 }

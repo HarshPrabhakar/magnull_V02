@@ -7,9 +7,57 @@ import {
   type WorldPoint,
 } from "./OpenWorldScene";
 import { terrainHeight } from "./worldMath";
-import { controlFlight, fetchFlightState, startFlight, type FlightState } from "./openWorldApi";
+import { controlFlight, fetchFlightState, startFlight, type FlightState, type FlightTelemetry } from "./openWorldApi";
 
 const INITIAL_SEED = 42;
+const TELEMETRY_HISTORY_LIMIT = 300;
+
+type TelemetryMetric = "speed_mps" | "altitude_m" | "vertical_speed_mps" | "distance_remaining_m" | "heading_deg" | "trajectory_deviation_m";
+type TelemetrySample = { scenario_id: string; sim_time: number; ground_truth: FlightTelemetry; estimated: FlightTelemetry };
+
+function TelemetryChart({
+  title,
+  unit,
+  metric,
+  samples,
+  min,
+  max,
+}: {
+  title: string;
+  unit: string;
+  metric: TelemetryMetric;
+  samples: TelemetrySample[];
+  min: number;
+  max: number;
+}) {
+  const plot = (key: "ground_truth" | "estimated") => samples.map((sample, index) => {
+    const x = samples.length < 2 ? 500 : index / (samples.length - 1) * 1_000;
+    const value = sample[key][metric];
+    const normalized = Math.max(0, Math.min(1, (value - min) / (max - min)));
+    const y = 90 - normalized * 75;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const latest = samples.at(-1);
+
+  return (
+    <article className="open-world-telemetry-chart">
+      <div className="open-world-chart-heading">
+        <span>{title}</span>
+        <strong>{latest ? `${latest.ground_truth[metric].toFixed(1)} ${unit}` : `— ${unit}`}</strong>
+      </div>
+      {latest ? (
+        <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img" aria-label={`${title} ground truth and estimated telemetry over simulation time`}>
+          <line x1="0" y1="15" x2="1000" y2="15" />
+          <line x1="0" y1="52.5" x2="1000" y2="52.5" />
+          <line x1="0" y1="90" x2="1000" y2="90" />
+          <polyline className="truth-line" points={plot("ground_truth")} />
+          <polyline className="estimate-line" points={plot("estimated")} />
+        </svg>
+      ) : <span className="open-world-chart-empty">Waiting for START</span>}
+      <div className="open-world-chart-legend"><span>GROUND TRUTH</span><span>ESTIMATE</span></div>
+    </article>
+  );
+}
 
 function MetricRow({ label, value }: { label: string; value: string }) {
   return (
@@ -43,6 +91,7 @@ export default function OpenWorldPage() {
   const [initialAltitude, setInitialAltitude] = useState(120);
   const [maxSpeed, setMaxSpeed] = useState(18);
   const [flight, setFlight] = useState<FlightState | null>(null);
+  const [telemetryHistory, setTelemetryHistory] = useState<TelemetrySample[]>([]);
   const [simulationError, setSimulationError] = useState("");
   const [serviceAvailable, setServiceAvailable] = useState(false);
   const [destination, setDestination] = useState<WorldPoint>({ x: 3_100, z: 850 });
@@ -53,6 +102,26 @@ export default function OpenWorldPage() {
     "Idle: no flight or RF events have been generated",
   ]);
 
+  const acceptFlightState = useCallback((state: FlightState, resetHistory = false) => {
+    setFlight(state);
+    if (resetHistory || (state.status === "standby" && !state.scenario_id)) {
+      setTelemetryHistory([]);
+    }
+    if (!state.scenario_id) return;
+    const sample: TelemetrySample = {
+      scenario_id: state.scenario_id,
+      sim_time: state.sim_time,
+      ground_truth: state.ground_truth,
+      estimated: state.estimated_telemetry,
+    };
+    setTelemetryHistory((previous) => {
+      const latest = previous.at(-1);
+      if (resetHistory || !latest || latest.scenario_id !== sample.scenario_id) return [sample];
+      if (sample.sim_time <= latest.sim_time) return previous;
+      return [...previous, sample].slice(-TELEMETRY_HISTORY_LIMIT);
+    });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
@@ -60,12 +129,12 @@ export default function OpenWorldPage() {
       try {
         const state = await fetchFlightState();
         if (cancelled) return;
-        setFlight(state);
+        acceptFlightState(state);
         setServiceAvailable(true);
         if (state.status === "active" && timer === undefined) {
           timer = window.setInterval(() => {
             void fetchFlightState().then((next) => {
-              if (!cancelled) setFlight(next);
+              if (!cancelled) acceptFlightState(next);
             }).catch((error: unknown) => {
               if (!cancelled) setSimulationError(error instanceof Error ? error.message : "Simulation service disconnected");
             });
@@ -87,7 +156,7 @@ export default function OpenWorldPage() {
       cancelled = true;
       if (timer !== undefined) window.clearInterval(timer);
     };
-  }, [flight?.status]);
+  }, [flight?.status, acceptFlightState]);
 
   const runFlightAction = async (action: "start" | "pause" | "resume" | "stop" | "reset") => {
     setSimulationError("");
@@ -95,7 +164,7 @@ export default function OpenWorldPage() {
       const next = action === "start"
         ? await startFlight({ seed, spawn_distance_m: spawnDistance, initial_altitude_m: initialAltitude, max_speed_mps: maxSpeed, wind_speed_mps: windSpeed, destination_x_m: destination.x, destination_z_m: destination.z })
         : await controlFlight(action);
-      setFlight(next);
+      acceptFlightState(next, action === "reset" || action === "start");
       setServiceAvailable(true);
       recordWorldEvent(action === "start"
         ? `Scenario ${next.scenario_id} started · drone ${next.drone_id} spawned`
@@ -108,6 +177,7 @@ export default function OpenWorldPage() {
   const flightLocked = flight?.status === "active" || flight?.status === "paused";
   const scenarioConfigured = Boolean(flight?.drone_id);
   const simClock = flight ? new Date(flight.sim_time * 1000).toISOString().slice(11, 19) : "00:00:00";
+  const visibleTelemetryHistory = flight?.scenario_id ? telemetryHistory : [];
 
   const recordWorldEvent = useCallback((message: string) => {
     setWorldEvents((previous) => [message, ...previous].slice(0, 12));
@@ -344,9 +414,19 @@ export default function OpenWorldPage() {
             <MetricRow label="POSITION · X / Y / Z" value={flight?.drone_id ? `${Math.round(flight.position.x)} / ${Math.round(flight.position.y)} / ${Math.round(flight.position.z)} m` : "— / — / — m"} />
             <MetricRow label="ALTITUDE · AGL" value={flight?.drone_id ? `${flight.altitude_m.toFixed(1)} m` : "— m"} />
             <MetricRow label="GROUND SPEED" value={flight?.drone_id ? `${flight.speed_mps.toFixed(1)} m/s` : "— m/s"} />
+            <MetricRow label="VERTICAL SPEED" value={flight?.drone_id ? `${flight.vertical_speed_mps.toFixed(2)} m/s` : "— m/s"} />
+            <MetricRow label="ACCELERATION" value={flight?.drone_id ? `${flight.acceleration_mps2.toFixed(2)} m/s²` : "— m/s²"} />
             <MetricRow label="HEADING" value={flight?.drone_id ? `${flight.heading_deg.toFixed(0)}°` : "—°"} />
+            <MetricRow label="DISTANCE TRAVELLED" value={flight?.drone_id ? `${flight.distance_travelled_m.toFixed(0)} m` : "— m"} />
             <MetricRow label="DISTANCE REMAINING" value={flight?.drone_id ? `${flight.distance_remaining_m.toFixed(0)} m` : "— m"} />
-            <MetricRow label="ESTIMATED ARRIVAL" value={flight?.eta_seconds != null ? `${Math.ceil(flight.eta_seconds)} s · simulated` : "—"} />
+            <MetricRow label="TRAJECTORY DEVIATION" value={flight?.drone_id ? `${flight.trajectory_deviation_m.toFixed(1)} m` : "— m"} />
+            <MetricRow label="ESTIMATED ARRIVAL" value={flight?.status === "paused" ? "PAUSED" : flight?.estimated_telemetry.eta_seconds != null ? `${Math.ceil(flight.estimated_telemetry.eta_seconds)} s · estimate` : "—"} />
+            <MetricRow label="MODEL REFERENCE ETA" value={flight?.eta_seconds != null ? `${Math.ceil(flight.eta_seconds)} s` : "—"} />
+            <div className="open-world-compare-heading">GROUND TRUTH <span>VS</span> ESTIMATE</div>
+            <MetricRow label="SPEED · TRUE / EST." value={flight?.drone_id ? `${flight.ground_truth.speed_mps.toFixed(1)} / ${flight.estimated_telemetry.speed_mps.toFixed(1)} m/s` : "—"} />
+            <MetricRow label="ALTITUDE · TRUE / EST." value={flight?.drone_id ? `${flight.ground_truth.altitude_m.toFixed(1)} / ${flight.estimated_telemetry.altitude_m.toFixed(1)} m` : "—"} />
+            <MetricRow label="HEADING · TRUE / EST." value={flight?.drone_id ? `${flight.ground_truth.heading_deg.toFixed(1)} / ${flight.estimated_telemetry.heading_deg.toFixed(1)}°` : "—"} />
+            <MetricRow label="POSITION ESTIMATION ERROR" value={flight?.drone_id ? `${flight.estimation_error_m.toFixed(2)} m · simulated` : "—"} />
           </section>
 
           <section>
@@ -369,19 +449,13 @@ export default function OpenWorldPage() {
           </section>
         </aside>
 
-        <section className="open-world-bottom" aria-label="Scenario history panels">
-          <article className="open-world-chart-placeholder">
-            <div className="open-world-panel-heading">SPEED OVER TIME</div>
-            <span>{flight?.drone_id ? `${flight.speed_mps.toFixed(1)} m/s · ${flight.distance_travelled_m.toFixed(0)} m travelled` : "Waiting for simulation start"}</span>
-          </article>
-          <article className="open-world-chart-placeholder">
-            <div className="open-world-panel-heading">ALTITUDE OVER TIME</div>
-            <span>{flight?.drone_id ? `${flight.altitude_m.toFixed(0)} m AGL · ${flight.status}` : "Waiting for simulation start"}</span>
-          </article>
-          <article className="open-world-chart-placeholder open-world-history-preview">
-            <div className="open-world-panel-heading">HOPPING & WATERFALL PREVIEW</div>
-            <span>RF engine idle</span>
-          </article>
+        <section className="open-world-bottom" aria-label="Live telemetry history">
+          <TelemetryChart title="SPEED OVER TIME" unit="m/s" metric="speed_mps" samples={visibleTelemetryHistory} min={0} max={60} />
+          <TelemetryChart title="ALTITUDE OVER TIME" unit="m AGL" metric="altitude_m" samples={visibleTelemetryHistory} min={0} max={500} />
+          <TelemetryChart title="VERTICAL SPEED" unit="m/s" metric="vertical_speed_mps" samples={visibleTelemetryHistory} min={-10} max={10} />
+          <TelemetryChart title="DISTANCE REMAINING" unit="m" metric="distance_remaining_m" samples={visibleTelemetryHistory} min={0} max={10_000} />
+          <TelemetryChart title="HEADING OVER TIME" unit="°" metric="heading_deg" samples={visibleTelemetryHistory} min={0} max={360} />
+          <TelemetryChart title="TRAJECTORY DEVIATION" unit="m" metric="trajectory_deviation_m" samples={visibleTelemetryHistory} min={0} max={1_000} />
         </section>
       </div>
     </main>
