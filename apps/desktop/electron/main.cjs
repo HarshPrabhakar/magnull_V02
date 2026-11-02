@@ -69,6 +69,28 @@ async function ensureBackendReady() {
   throw new Error("Mag-Null backend did not become ready within 15 seconds. Check that the local Python environment has the locked requirements installed.");
 }
 
+function showRendererError(mainWindow, message) {
+  if (mainWindow.isDestroyed()) return;
+
+  const safeMessage = String(message).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
+  const errorPage = `<!doctype html><html><head><meta charset="utf-8"><title>Mag-Null could not load</title><style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#03060b;color:#c5d5df;font:14px Consolas,"Courier New",monospace}
+    main{width:min(680px,calc(100% - 40px));padding:28px;background:#070d16;border:1px solid #345064;box-shadow:0 18px 60px #0008}
+    h1{margin:0 0 12px;color:#00d8aa;font-size:18px;letter-spacing:1px}p{line-height:1.6}pre{padding:12px;background:#03060b;border:1px solid #203244;color:#e3af83;white-space:pre-wrap;overflow-wrap:anywhere}
+    button{padding:9px 14px;background:#08201f;border:1px solid #00a98f;color:#8ce3cf;font:inherit;cursor:pointer}
+  </style></head><body><main><h1>MAG-NULL DASHBOARD COULD NOT LOAD</h1><p>The desktop window opened, but its interface did not finish loading. Retry the page, or restart Mag-Null if the problem continues.</p><pre>${safeMessage}</pre><button onclick="location.reload()">RETRY DASHBOARD</button></main></body></html>`;
+
+  console.error("Mag-Null renderer failed", message);
+  void mainWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(errorPage)}`);
+  if (!mainWindow.isVisible()) mainWindow.show();
+}
+
 function createWindow() {
   const mainWindow = new BrowserWindow({
     width: 1440,
@@ -77,6 +99,7 @@ function createWindow() {
     minHeight: 700,
     title: "Mag-Null",
     backgroundColor: "#10141c",
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.cjs"),
       contextIsolation: true,
@@ -85,14 +108,26 @@ function createWindow() {
     }
   });
 
+  mainWindow.once("ready-to-show", () => mainWindow.show());
+  mainWindow.webContents.on("console-message", (details) => {
+    if (details.level === "error") console.error(`[renderer] ${details.message}`);
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, description, url, isMainFrame) => {
+    if (isMainFrame && errorCode !== -3 && !url.startsWith("data:")) {
+      showRendererError(mainWindow, `${description} (${errorCode})\n${url}`);
+    }
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, _contents, details) => {
+    showRendererError(mainWindow, `Renderer stopped: ${details.reason} (exit code ${details.exitCode})`);
+  });
+
   const devServerUrl = process.env.MAGNULL_DEV_SERVER_URL;
 
   if (devServerUrl) {
-    mainWindow.loadURL(devServerUrl);
+    void mainWindow.loadURL(devServerUrl).catch((error) => showRendererError(mainWindow, error.message));
   } else {
-    mainWindow.loadFile(
-      path.join(__dirname, "../frontend/dist/index.html")
-    );
+    void mainWindow.loadFile(path.join(__dirname, "../frontend/dist/index.html"))
+      .catch((error) => showRendererError(mainWindow, error.message));
   }
 }
 
