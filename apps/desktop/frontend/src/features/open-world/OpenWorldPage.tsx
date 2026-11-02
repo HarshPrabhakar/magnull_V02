@@ -207,6 +207,18 @@ export default function OpenWorldPage() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let timerInterval: number | undefined;
+    const stopPolling = () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      timer = undefined;
+      timerInterval = undefined;
+    };
+    const pollAt = (interval: number, refresh: () => void) => {
+      if (timer !== undefined && timerInterval === interval) return;
+      stopPolling();
+      timer = window.setInterval(refresh, interval);
+      timerInterval = interval;
+    };
     const refresh = async () => {
       try {
         const snapshot = await fetchOpenWorldSnapshot();
@@ -216,25 +228,24 @@ export default function OpenWorldPage() {
         setRFState(snapshot.rf);
         setServiceAvailable(true);
         if (state.status === "active" && timer === undefined) {
-          timer = window.setInterval(() => {
-            void refresh();
-          }, 200);
+          pollAt(200, () => void refresh());
+        } else if (state.status === "active" && timerInterval !== 200) {
+          pollAt(200, () => void refresh());
         } else if (state.status !== "active" && timer !== undefined) {
-          window.clearInterval(timer);
-          timer = undefined;
+          stopPolling();
         }
       } catch (error) {
         if (!cancelled) {
           setServiceAvailable(false);
           setSimulationError(error instanceof Error ? error.message : "Simulation service unavailable");
-          if (timer === undefined) timer = window.setInterval(() => void refresh(), 2_000);
+          pollAt(2_000, () => void refresh());
         }
       }
     };
     void refresh();
     return () => {
       cancelled = true;
-      if (timer !== undefined) window.clearInterval(timer);
+      stopPolling();
     };
   }, [flight?.status, acceptFlightState]);
 
