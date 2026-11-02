@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.middleware.cors import CORSMiddleware
 
 from schemas.spectrum import SpectrumFrame
+from schemas.open_world import FlightStartRequest, FlightState
+from simulation.open_world import FlightConfig, OpenWorldSimulation
 from simulation.spectrum import generate_spectrum
 
 
@@ -24,11 +26,14 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "null",  # packaged Electron renderer loaded from file://
     ],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+open_world_simulation = OpenWorldSimulation()
 
 
 def build_config_hash(scenario: str, bins: int, seed: int) -> str:
@@ -87,6 +92,37 @@ def health_check():
         "mode": "simulation",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/api/v1/open-world/state", response_model=FlightState)
+def open_world_state():
+    return open_world_simulation.snapshot()
+
+
+@app.post("/api/v1/open-world/start", response_model=FlightState)
+def start_open_world(request: FlightStartRequest):
+    try:
+        config = FlightConfig(**request.model_dump())
+        return open_world_simulation.start(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/open-world/{action}", response_model=FlightState)
+def control_open_world(action: str):
+    actions = {
+        "pause": open_world_simulation.pause,
+        "resume": open_world_simulation.resume,
+        "stop": open_world_simulation.stop,
+        "reset": open_world_simulation.reset,
+    }
+    operation = actions.get(action)
+    if operation is None:
+        raise HTTPException(status_code=404, detail="Unknown scenario action")
+    try:
+        return operation()
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/spectrum")

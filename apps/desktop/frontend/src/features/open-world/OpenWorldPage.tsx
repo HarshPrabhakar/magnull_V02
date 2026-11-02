@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   OpenWorldScene,
   type CameraCommand,
@@ -7,6 +7,7 @@ import {
   type WorldPoint,
 } from "./OpenWorldScene";
 import { terrainHeight } from "./worldMath";
+import { controlFlight, fetchFlightState, startFlight, type FlightState } from "./openWorldApi";
 
 const INITIAL_SEED = 42;
 
@@ -38,6 +39,12 @@ export default function OpenWorldPage() {
     visibilityMeters: 14_000,
   });
   const [windSpeed, setWindSpeed] = useState(0);
+  const [spawnDistance, setSpawnDistance] = useState(5_000);
+  const [initialAltitude, setInitialAltitude] = useState(120);
+  const [maxSpeed, setMaxSpeed] = useState(18);
+  const [flight, setFlight] = useState<FlightState | null>(null);
+  const [simulationError, setSimulationError] = useState("");
+  const [serviceAvailable, setServiceAvailable] = useState(false);
   const [destination, setDestination] = useState<WorldPoint>({ x: 3_100, z: 850 });
   const [destinationPicking, setDestinationPicking] = useState(false);
   const [inspectedPoint, setInspectedPoint] = useState<WorldPoint | null>(null);
@@ -45,6 +52,62 @@ export default function OpenWorldPage() {
     `World generated from seed ${INITIAL_SEED}`,
     "Idle: no flight or RF events have been generated",
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const state = await fetchFlightState();
+        if (cancelled) return;
+        setFlight(state);
+        setServiceAvailable(true);
+        if (state.status === "active" && timer === undefined) {
+          timer = window.setInterval(() => {
+            void fetchFlightState().then((next) => {
+              if (!cancelled) setFlight(next);
+            }).catch((error: unknown) => {
+              if (!cancelled) setSimulationError(error instanceof Error ? error.message : "Simulation service disconnected");
+            });
+          }, 200);
+        } else if (state.status !== "active" && timer !== undefined) {
+          window.clearInterval(timer);
+          timer = undefined;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setServiceAvailable(false);
+          setSimulationError(error instanceof Error ? error.message : "Simulation service unavailable");
+          if (timer === undefined) timer = window.setInterval(() => void refresh(), 2_000);
+        }
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [flight?.status]);
+
+  const runFlightAction = async (action: "start" | "pause" | "resume" | "stop" | "reset") => {
+    setSimulationError("");
+    try {
+      const next = action === "start"
+        ? await startFlight({ seed, spawn_distance_m: spawnDistance, initial_altitude_m: initialAltitude, max_speed_mps: maxSpeed, wind_speed_mps: windSpeed, destination_x_m: destination.x, destination_z_m: destination.z })
+        : await controlFlight(action);
+      setFlight(next);
+      setServiceAvailable(true);
+      recordWorldEvent(action === "start"
+        ? `Scenario ${next.scenario_id} started · drone ${next.drone_id} spawned`
+        : `Scenario ${action} · simulation ${next.status}`);
+    } catch (error) {
+      setSimulationError(error instanceof Error ? error.message : "Simulation request failed");
+    }
+  };
+
+  const flightLocked = flight?.status === "active" || flight?.status === "paused";
+  const scenarioConfigured = Boolean(flight?.drone_id);
+  const simClock = flight ? new Date(flight.sim_time * 1000).toISOString().slice(11, 19) : "00:00:00";
 
   const recordWorldEvent = useCallback((message: string) => {
     setWorldEvents((previous) => [message, ...previous].slice(0, 12));
@@ -63,6 +126,7 @@ export default function OpenWorldPage() {
   };
 
   const generateEnvironment = () => {
+    if (flightLocked) return;
     const randomSeed = new Uint32Array(1);
     window.crypto.getRandomValues(randomSeed);
     const nextSeed = randomSeed[0] % 2_147_483_648;
@@ -111,10 +175,10 @@ export default function OpenWorldPage() {
           <p>Seeded terrain and camera workspace</p>
         </div>
         <div className="open-world-status-strip" aria-label="Simulation status">
-          <span className="open-world-status-item"><i /> SIMULATION: STANDBY</span>
+          <span className={`open-world-status-item ${flight?.status === "active" ? "active" : ""}`}><i /> SIMULATION: {flight?.status?.toUpperCase() ?? "STANDBY"}</span>
           <span className="open-world-status-item"><i /> WORLD: READY</span>
-          <span className="open-world-status-item muted"><i /> DRONE: NOT SPAWNED</span>
-          <span className="open-world-status-item muted"><i /> RF: IDLE</span>
+          <span className={`open-world-status-item ${flight?.drone_id ? "active" : "muted"}`}><i /> DRONE: {flight?.drone_id ? flight.status === "complete" ? "LANDED" : flight.status === "stopped" ? "STOPPED" : "AIRBORNE" : "NOT SPAWNED"}</span>
+          <span className="open-world-status-item muted"><i /> RF: IDLE · PHASE 5</span>
         </div>
       </header>
 
@@ -130,10 +194,24 @@ export default function OpenWorldPage() {
               max={2_147_483_647}
               step={1}
               value={seedText}
+              disabled={scenarioConfigured}
               aria-describedby="world-seed-help"
               onChange={(event) => updateSeed(event.target.value)}
             />
             <small id="world-seed-help">Same seed generates the same terrain.</small>
+          </label>
+
+          <label className="open-world-field">
+            <span>Spawn distance <strong>{(spawnDistance / 1_000).toFixed(1)} km</strong></span>
+            <input type="range" min={500} max={10_000} step={500} value={spawnDistance} disabled={scenarioConfigured} onChange={(event) => setSpawnDistance(Number(event.target.value))} />
+          </label>
+          <label className="open-world-field">
+            <span>Initial altitude <strong>{initialAltitude} m AGL</strong></span>
+            <input type="range" min={20} max={500} step={10} value={initialAltitude} disabled={scenarioConfigured} onChange={(event) => setInitialAltitude(Number(event.target.value))} />
+          </label>
+          <label className="open-world-field">
+            <span>Maximum speed <strong>{maxSpeed} m/s</strong></span>
+            <input type="range" min={5} max={40} step={1} value={maxSpeed} disabled={scenarioConfigured} onChange={(event) => setMaxSpeed(Number(event.target.value))} />
           </label>
 
           <div className="open-world-field">
@@ -188,8 +266,8 @@ export default function OpenWorldPage() {
           </label>
           <label className="open-world-range-field">
             <span>Virtual wind <strong>{windSpeed} m/s</strong></span>
-            <input type="range" min={0} max={20} step={1} value={windSpeed} onChange={(event) => setWindSpeed(Number(event.target.value))} />
-            <small>Stored for the next flight scenario; no motion is active.</small>
+            <input type="range" min={0} max={20} step={1} value={windSpeed} disabled={scenarioConfigured} onChange={(event) => setWindSpeed(Number(event.target.value))} />
+            <small>{scenarioConfigured ? "Reset scenario to change wind." : "Applied as a deterministic virtual disturbance on start."}</small>
           </label>
 
           <div className="open-world-section-divider">DESTINATION · SAFE ZONE-01</div>
@@ -201,6 +279,7 @@ export default function OpenWorldPage() {
           <button
             className={`open-world-secondary-action ${destinationPicking ? "selecting" : ""}`}
             type="button"
+            disabled={scenarioConfigured}
             aria-pressed={destinationPicking}
             onClick={() => setDestinationPicking((current) => !current)}
           >
@@ -213,17 +292,17 @@ export default function OpenWorldPage() {
           </div>
 
           <div className="open-world-section-divider">SCENARIO LIFECYCLE</div>
-          <button className="open-world-primary-action" type="button" disabled title="Flight simulation is introduced in the next phase">
-            ▶ START SIMULATION
+          <button className="open-world-primary-action" type="button" disabled={!serviceAvailable || flight?.status === "active" || flight?.status === "complete"} onClick={() => void runFlightAction(flight?.status === "paused" ? "resume" : "start")}>
+            ▶ {flight?.status === "paused" ? "RESUME SIMULATION" : "START SIMULATION"}
           </button>
           <div className="open-world-action-grid">
-            <button type="button" disabled>Ⅱ PAUSE</button>
-            <button type="button" disabled>■ STOP</button>
-            <button type="button" disabled>↺ RESET SCENARIO</button>
+            <button type="button" disabled={flight?.status !== "active"} onClick={() => void runFlightAction("pause")}>Ⅱ PAUSE</button>
+            <button type="button" disabled={!flightLocked} onClick={() => void runFlightAction("stop")}>■ STOP</button>
+            <button type="button" disabled={flight?.status === "active" || flight?.status === "paused"} onClick={() => void runFlightAction("reset")}>↺ RESET SCENARIO</button>
           </div>
-          <p className="open-world-hint">Flight remains inactive while the terrain and camera foundation is being built.</p>
+          <p className="open-world-hint">{simulationError || (serviceAvailable ? "Flight motion is provided by the local simulation backend." : "Waiting for simulation backend at 127.0.0.1:8765.")}</p>
 
-          <button className="open-world-secondary-action open-world-generate-action" type="button" onClick={generateEnvironment}>
+          <button className="open-world-secondary-action open-world-generate-action" type="button" disabled={scenarioConfigured} onClick={generateEnvironment}>
             GENERATE NEW ENVIRONMENT
           </button>
           <div className="open-world-provenance">SIMULATED DATA · UNCLASSIFIED · DEMONSTRATION SYSTEM</div>
@@ -241,6 +320,7 @@ export default function OpenWorldPage() {
               cameraCommand={cameraCommand}
               settings={sceneSettings}
               destinationPoint={destination}
+              flight={flight}
               onTerrainClick={handleTerrainClick}
             />
             {destinationPicking && <div className="open-world-pick-hint">CLICK A TERRAIN POINT TO MOVE SAFE ZONE-01</div>}
@@ -258,15 +338,15 @@ export default function OpenWorldPage() {
 
         <aside className="open-world-sidebar open-world-analysis" aria-label="Live analysis">
           <section>
-            <div className="open-world-panel-heading">LIVE TELEMETRY <span>NO ACTIVE DRONE</span></div>
-            <MetricRow label="DRONE ID" value="—" />
-            <MetricRow label="SIMULATION TIME" value="00:00:00" />
-            <MetricRow label="POSITION · X / Y / Z" value="— / — / — m" />
-            <MetricRow label="ALTITUDE" value="— m" />
-            <MetricRow label="GROUND SPEED" value="— m/s" />
-            <MetricRow label="HEADING" value="—°" />
-            <MetricRow label="DISTANCE REMAINING" value="— m" />
-            <MetricRow label="ESTIMATED ARRIVAL" value="—" />
+            <div className="open-world-panel-heading">LIVE TELEMETRY <span>{flight?.status?.toUpperCase() ?? "STANDBY"}</span></div>
+            <MetricRow label="DRONE ID" value={flight?.drone_id ?? "—"} />
+            <MetricRow label="SCENARIO · SIM TIME" value={`${flight?.scenario_id ?? "—"} · ${simClock}`} />
+            <MetricRow label="POSITION · X / Y / Z" value={flight?.drone_id ? `${Math.round(flight.position.x)} / ${Math.round(flight.position.y)} / ${Math.round(flight.position.z)} m` : "— / — / — m"} />
+            <MetricRow label="ALTITUDE · AGL" value={flight?.drone_id ? `${flight.altitude_m.toFixed(1)} m` : "— m"} />
+            <MetricRow label="GROUND SPEED" value={flight?.drone_id ? `${flight.speed_mps.toFixed(1)} m/s` : "— m/s"} />
+            <MetricRow label="HEADING" value={flight?.drone_id ? `${flight.heading_deg.toFixed(0)}°` : "—°"} />
+            <MetricRow label="DISTANCE REMAINING" value={flight?.drone_id ? `${flight.distance_remaining_m.toFixed(0)} m` : "— m"} />
+            <MetricRow label="ESTIMATED ARRIVAL" value={flight?.eta_seconds != null ? `${Math.ceil(flight.eta_seconds)} s · simulated` : "—"} />
           </section>
 
           <section>
@@ -292,11 +372,11 @@ export default function OpenWorldPage() {
         <section className="open-world-bottom" aria-label="Scenario history panels">
           <article className="open-world-chart-placeholder">
             <div className="open-world-panel-heading">SPEED OVER TIME</div>
-            <span>Waiting for simulation start</span>
+            <span>{flight?.drone_id ? `${flight.speed_mps.toFixed(1)} m/s · ${flight.distance_travelled_m.toFixed(0)} m travelled` : "Waiting for simulation start"}</span>
           </article>
           <article className="open-world-chart-placeholder">
             <div className="open-world-panel-heading">ALTITUDE OVER TIME</div>
-            <span>Waiting for simulation start</span>
+            <span>{flight?.drone_id ? `${flight.altitude_m.toFixed(0)} m AGL · ${flight.status}` : "Waiting for simulation start"}</span>
           </article>
           <article className="open-world-chart-placeholder open-world-history-preview">
             <div className="open-world-panel-heading">HOPPING & WATERFALL PREVIEW</div>

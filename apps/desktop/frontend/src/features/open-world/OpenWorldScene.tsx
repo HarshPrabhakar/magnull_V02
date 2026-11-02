@@ -3,6 +3,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls, Sky } from "@react-three/drei";
 import * as THREE from "three";
 import { terrainHeight } from "./worldMath";
+import type { FlightState } from "./openWorldApi";
 
 export type EnvironmentMode = "technical" | "realistic";
 export type WorldPoint = { x: number; z: number };
@@ -192,11 +193,15 @@ function Forest({ seed }: { seed: number }) {
 function WorldMarkers({
   seed,
   destinationPoint,
+  flight,
 }: {
   seed: number;
   destinationPoint: WorldPoint;
+  flight: FlightState | null;
 }) {
-  const spawn = new THREE.Vector3(-3_200, terrainHeight(-3_200, -700, seed), -700);
+  const spawn = flight
+    ? new THREE.Vector3(flight.spawn.x, terrainHeight(flight.spawn.x, flight.spawn.z, seed), flight.spawn.z)
+    : new THREE.Vector3(-3_200, terrainHeight(-3_200, -700, seed), -700);
   const destination = new THREE.Vector3(
     destinationPoint.x,
     terrainHeight(destinationPoint.x, destinationPoint.z, seed),
@@ -210,7 +215,7 @@ function WorldMarkers({
         <meshBasicMaterial color="#ff5873" />
       </mesh>
       <Html position={[spawn.x, spawn.y + 150, spawn.z]} center distanceFactor={7_200}>
-        <span className="world-marker-label spawn-label">SPAWN AREA</span>
+        <span className="world-marker-label spawn-label">{flight ? "DRONE SPAWN" : "SPAWN AREA"}</span>
       </Html>
       <mesh position={[destination.x, destination.y + 10, destination.z]}>
         <torusGeometry args={[115, 9, 8, 48]} />
@@ -229,7 +234,64 @@ function WorldMarkers({
           SAFE ZONE-01
         </span>
       </Html>
+      {flight?.drone_id && (
+        <>
+          <Line
+            points={[spawn, new THREE.Vector3(flight.position.x, flight.position.y, flight.position.z)]}
+            color="#4be5d0"
+            lineWidth={2}
+          />
+          <Line
+            points={[new THREE.Vector3(flight.position.x, flight.position.y, flight.position.z), destination]}
+            color="#ffc45b"
+            lineWidth={1.4}
+            dashed
+            dashSize={75}
+            gapSize={45}
+          />
+          <DroneModel flight={flight} />
+        </>
+      )}
     </>
+  );
+}
+
+function DroneModel({ flight }: { flight: FlightState }) {
+  const { x, y, z } = flight.position;
+  return (
+    <group position={[x, y, z]} rotation={[0, -flight.heading_deg * Math.PI / 180, 0]}>
+      <mesh>
+        <boxGeometry args={[34, 14, 44]} />
+        <meshStandardMaterial color="#d4e5e2" metalness={0.35} roughness={0.45} />
+      </mesh>
+      <mesh position={[0, 2, -27]}>
+        <coneGeometry args={[8, 20, 4]} />
+        <meshBasicMaterial color="#ffc45b" />
+      </mesh>
+      {([-1, 1] as const).flatMap((side) => ([-1, 1] as const).map((front) => (
+        <group key={`${side}-${front}`} position={[side * 45, 0, front * 43]}>
+          <mesh rotation={[0, 0, Math.atan2(side, front)]}>
+            <boxGeometry args={[8, 5, 78]} />
+            <meshStandardMaterial color="#8daaa7" metalness={0.3} />
+          </mesh>
+          <mesh position={[0, 8, 0]}>
+            <cylinderGeometry args={[25, 25, 3, 20]} />
+            <meshBasicMaterial color="#49dcca" transparent opacity={0.65} />
+          </mesh>
+          <mesh position={[0, -8, 0]}>
+            <sphereGeometry args={[8, 10, 8]} />
+            <meshBasicMaterial color={side === front ? "#ff5873" : "#ffc45b"} />
+          </mesh>
+        </group>
+      ))) }
+      <Html position={[0, 70, 0]} center distanceFactor={5_000}>
+        <span className="world-marker-label drone-label">{flight.drone_id} · {flight.status === "complete" ? "LANDED" : flight.status.toUpperCase()}</span>
+      </Html>
+      <mesh position={[0, -flight.altitude_m + 5, 0]}>
+        <ringGeometry args={[23, 29, 24]} />
+        <meshBasicMaterial color="#49dcca" side={THREE.DoubleSide} />
+      </mesh>
+    </group>
   );
 }
 
@@ -289,6 +351,7 @@ export function OpenWorldScene({
   cameraCommand,
   settings,
   destinationPoint,
+  flight,
   onTerrainClick,
 }: {
   seed: number;
@@ -296,6 +359,7 @@ export function OpenWorldScene({
   cameraCommand: CameraCommand;
   settings: SceneSettings;
   destinationPoint: WorldPoint;
+  flight: FlightState | null;
   onTerrainClick: (point: WorldPoint) => void;
 }) {
   const night = settings.lighting === "night";
@@ -354,7 +418,7 @@ export function OpenWorldScene({
       {settings.roadsVisible && <WorldRoad seed={seed} mode={mode} />}
       {settings.buildingsVisible && <Buildings seed={seed} mode={mode} />}
       {mode === "realistic" && settings.forestVisible && <Forest seed={seed} />}
-      <WorldMarkers seed={seed} destinationPoint={destinationPoint} />
+      <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} />
 
       <OrbitControls
         makeDefault
