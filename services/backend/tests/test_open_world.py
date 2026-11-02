@@ -1,4 +1,6 @@
 import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 
 from simulation.open_world import FlightConfig, OpenWorldSimulation
 
@@ -59,6 +61,77 @@ def test_stop_preserves_partial_flight_and_reset_clears_it(monkeypatch):
     assert reset["status"] == "standby"
     assert reset["drone_id"] is None
     assert reset["sim_time"] == 0
+
+
+def test_flight_completes_inside_destination_zone(monkeypatch):
+    now = [300.0]
+    monkeypatch.setattr("simulation.open_world.monotonic", lambda: now[0])
+    simulation = OpenWorldSimulation()
+    simulation.start(FlightConfig(spawn_distance_m=100, max_speed_mps=60))
+
+    for _ in range(30):
+        now[0] += 1
+        state = simulation.snapshot()
+        if state["status"] == "complete":
+            break
+
+    assert state["status"] == "complete"
+    assert state["distance_remaining_m"] == 0
+    assert state["speed_mps"] == 0
+
+
+def test_open_world_api_supports_flight_lifecycle(monkeypatch):
+    from api import main as backend_main
+
+    now = [400.0]
+    monkeypatch.setattr("simulation.open_world.monotonic", lambda: now[0])
+    monkeypatch.setattr(backend_main, "open_world_simulation", OpenWorldSimulation())
+    config = backend_main.FlightStartRequest(**{
+        "seed": 42,
+        "spawn_distance_m": 1_000,
+        "initial_altitude_m": 120,
+        "max_speed_mps": 18,
+        "wind_speed_mps": 0,
+        "destination_x_m": 3_100,
+        "destination_z_m": 850,
+    })
+
+    initial = backend_main.open_world_state()
+    assert initial["status"] == "standby"
+
+    started = backend_main.start_open_world(config)
+    assert started["status"] == "active"
+    assert started["drone_id"]
+
+    now[0] += 1
+    paused = backend_main.control_open_world("pause")
+    assert paused["status"] == "paused"
+
+    resumed = backend_main.control_open_world("resume")
+    assert resumed["status"] == "active"
+
+    stopped = backend_main.control_open_world("stop")
+    assert stopped["status"] == "stopped"
+    assert stopped["drone_id"] == started["drone_id"]
+
+    reset = backend_main.control_open_world("reset")
+    assert reset["status"] == "standby"
+    assert reset["drone_id"] is None
+
+
+def test_open_world_api_rejects_invalid_and_out_of_order_actions(monkeypatch):
+    from api import main as backend_main
+
+    monkeypatch.setattr(backend_main, "open_world_simulation", OpenWorldSimulation())
+
+    with pytest.raises(ValidationError):
+        backend_main.FlightStartRequest(seed=-1)
+    with pytest.raises(HTTPException) as invalid_action:
+        backend_main.control_open_world("pause")
+    assert invalid_action.value.status_code == 409
+    with pytest.raises(HTTPException) as unknown_action:
+        backend_main.control_open_world("unknown")
+    assert unknown_action.value.status_code == 404
 
 
 @pytest.mark.parametrize("field,value", [
