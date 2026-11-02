@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from schemas.spectrum import SpectrumFrame
 from schemas.open_world import FlightStartRequest, FlightState
+from schemas.open_world_rf import OpenWorldRFState
+from schemas.open_world_snapshot import OpenWorldSimulationSnapshot
 from simulation.open_world import FlightConfig, OpenWorldSimulation
 from simulation.spectrum import generate_spectrum
 
@@ -97,6 +99,16 @@ def health_check():
 @app.get("/api/v1/open-world/state", response_model=FlightState)
 def open_world_state():
     return open_world_simulation.snapshot()
+
+
+@app.get("/api/v1/open-world/rf/state", response_model=OpenWorldRFState)
+def open_world_rf_state():
+    return open_world_simulation.rf_snapshot()
+
+
+@app.get("/api/v1/open-world/snapshot", response_model=OpenWorldSimulationSnapshot)
+def open_world_snapshot():
+    return open_world_simulation.combined_snapshot()
 
 
 @app.post("/api/v1/open-world/start", response_model=FlightState)

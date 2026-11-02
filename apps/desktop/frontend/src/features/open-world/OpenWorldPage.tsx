@@ -7,10 +7,18 @@ import {
   type WorldPoint,
 } from "./OpenWorldScene";
 import { terrainHeight } from "./worldMath";
-import { controlFlight, fetchFlightState, startFlight, type FlightState, type FlightTelemetry } from "./openWorldApi";
+import { controlFlight, fetchOpenWorldSnapshot, startFlight, type FlightState, type FlightTelemetry, type OpenWorldRFState, type RFEvent, type RFProfileId } from "./openWorldApi";
 
 const INITIAL_SEED = 42;
 const TELEMETRY_HISTORY_LIMIT = 300;
+const RF_PROFILES: { id: RFProfileId; label: string }[] = [
+  { id: "generic_fhss", label: "Generic FHSS" },
+  { id: "elrs_like", label: "ELRS-like (synthetic)" },
+  { id: "ocusync_like", label: "OcuSync-like (synthetic)" },
+  { id: "afhds_like", label: "AFHDS-like (synthetic)" },
+  { id: "analog_fpv_like", label: "Analog FPV-like" },
+  { id: "unknown_hopping", label: "Unknown synthetic hopping" },
+];
 
 type TelemetryMetric = "speed_mps" | "altitude_m" | "vertical_speed_mps" | "distance_remaining_m" | "heading_deg" | "trajectory_deviation_m";
 type TelemetrySample = { scenario_id: string; sim_time: number; ground_truth: FlightTelemetry; estimated: FlightTelemetry };
@@ -59,6 +67,77 @@ function TelemetryChart({
   );
 }
 
+function HoppingPlot({ rf }: { rf: OpenWorldRFState }) {
+  const generated = rf.generated_events;
+  const observed = rf.observed_events;
+  const low = rf.center_frequency_mhz != null && rf.bandwidth_mhz != null
+    ? rf.center_frequency_mhz - rf.bandwidth_mhz / 2
+    : 0;
+  const span = rf.bandwidth_mhz || 1;
+  const firstTime = generated[0]?.sim_time ?? 0;
+  const timeSpan = Math.max(0.001, (generated.at(-1)?.sim_time ?? 0) - firstTime);
+  const plot = (events: RFEvent[]) => {
+    if (!events.length) return "";
+    return events.map((event) => {
+      const x = generated.length === 1 ? 500 : ((event.sim_time - firstTime) / timeSpan) * 1_000;
+      const y = 92 - Math.max(0, Math.min(1, (event.frequency_mhz - low) / span)) * 78;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+  };
+
+  return (
+    <svg className="open-world-hopping-plot" viewBox="0 0 1000 100" preserveAspectRatio="none" role="img" aria-label="Generated and observed synthetic channel frequency over simulation time">
+      <line x1="0" y1="14" x2="1000" y2="14" />
+      <line x1="0" y1="53" x2="1000" y2="53" />
+      <line x1="0" y1="92" x2="1000" y2="92" />
+      {generated.length > 1 && <polyline className="generated-hop-line" points={plot(generated)} />}
+      {observed.length > 1 && <polyline className="observed-hop-line" points={plot(observed)} />}
+      {observed.length === 1 && <circle cx="500" cy={92 - Math.max(0, Math.min(1, (observed[0].frequency_mhz - low) / span)) * 78} r="5" />}
+    </svg>
+  );
+}
+
+function DistributionBars({ values, label }: { values: number[]; label: string }) {
+  const shown = values.slice(-24);
+  const max = Math.max(1, ...shown);
+  return (
+    <div className="open-world-distribution" role="img" aria-label={label}>
+      {shown.length ? shown.map((value, index) => <i key={`${index}-${value}`} style={{ height: `${Math.max(8, value / max * 100)}%` }} />) : <span>NO EVENTS</span>}
+    </div>
+  );
+}
+
+function SpectrumPlot({ rf }: { rf: OpenWorldRFState }) {
+  const points = rf.spectrum_power_db.map((power, index) => {
+    const x = rf.spectrum_power_db.length < 2 ? 0 : index / (rf.spectrum_power_db.length - 1) * 1_000;
+    const y = 92 - Math.max(0, Math.min(1, (power + 100) / 80)) * 78;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <svg className="open-world-spectrum-plot" viewBox="0 0 1000 100" preserveAspectRatio="none" role="img" aria-label="Synthetic spectrum generated from current hopping channel and path-loss measurement">
+      <line x1="0" y1="14" x2="1000" y2="14" />
+      <line x1="0" y1="53" x2="1000" y2="53" />
+      <line x1="0" y1="92" x2="1000" y2="92" />
+      {points && <polyline points={points} />}
+    </svg>
+  );
+}
+
+function OccupancyBars({ rf }: { rf: OpenWorldRFState }) {
+  const max = Math.max(1, ...rf.channel_occupancy.map((channel) => channel.occupancy_percent));
+  return (
+    <div className="open-world-occupancy-list" aria-label="Observed channel occupancy">
+      {rf.channel_occupancy.map((channel) => (
+        <div className="open-world-occupancy-row" key={channel.channel_index} title={`${channel.frequency_mhz.toFixed(3)} MHz · ${channel.event_count} events`}>
+          <span>{String(channel.channel_index + 1).padStart(2, "0")}</span>
+          <i><b style={{ width: `${channel.occupancy_percent / max * 100}%` }} /></i>
+          <small>{channel.occupancy_percent.toFixed(0)}%</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MetricRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="open-world-metric-row">
@@ -87,10 +166,13 @@ export default function OpenWorldPage() {
     visibilityMeters: 14_000,
   });
   const [windSpeed, setWindSpeed] = useState(0);
+  const [rfProfile, setRFProfile] = useState<RFProfileId>("generic_fhss");
+  const [interferenceDb, setInterferenceDb] = useState(0);
   const [spawnDistance, setSpawnDistance] = useState(5_000);
   const [initialAltitude, setInitialAltitude] = useState(120);
   const [maxSpeed, setMaxSpeed] = useState(18);
   const [flight, setFlight] = useState<FlightState | null>(null);
+  const [rfState, setRFState] = useState<OpenWorldRFState | null>(null);
   const [telemetryHistory, setTelemetryHistory] = useState<TelemetrySample[]>([]);
   const [simulationError, setSimulationError] = useState("");
   const [serviceAvailable, setServiceAvailable] = useState(false);
@@ -127,17 +209,15 @@ export default function OpenWorldPage() {
     let timer: number | undefined;
     const refresh = async () => {
       try {
-        const state = await fetchFlightState();
+        const snapshot = await fetchOpenWorldSnapshot();
         if (cancelled) return;
+        const state = snapshot.flight;
         acceptFlightState(state);
+        setRFState(snapshot.rf);
         setServiceAvailable(true);
         if (state.status === "active" && timer === undefined) {
           timer = window.setInterval(() => {
-            void fetchFlightState().then((next) => {
-              if (!cancelled) acceptFlightState(next);
-            }).catch((error: unknown) => {
-              if (!cancelled) setSimulationError(error instanceof Error ? error.message : "Simulation service disconnected");
-            });
+            void refresh();
           }, 200);
         } else if (state.status !== "active" && timer !== undefined) {
           window.clearInterval(timer);
@@ -162,9 +242,11 @@ export default function OpenWorldPage() {
     setSimulationError("");
     try {
       const next = action === "start"
-        ? await startFlight({ seed, spawn_distance_m: spawnDistance, initial_altitude_m: initialAltitude, max_speed_mps: maxSpeed, wind_speed_mps: windSpeed, destination_x_m: destination.x, destination_z_m: destination.z })
+        ? await startFlight({ seed, spawn_distance_m: spawnDistance, initial_altitude_m: initialAltitude, max_speed_mps: maxSpeed, wind_speed_mps: windSpeed, destination_x_m: destination.x, destination_z_m: destination.z, rf_profile: rfProfile, interference_db: interferenceDb })
         : await controlFlight(action);
-      acceptFlightState(next, action === "reset" || action === "start");
+      const snapshot = await fetchOpenWorldSnapshot();
+      acceptFlightState(snapshot.flight, action === "reset" || action === "start");
+      setRFState(snapshot.rf);
       setServiceAvailable(true);
       recordWorldEvent(action === "start"
         ? `Scenario ${next.scenario_id} started · drone ${next.drone_id} spawned`
@@ -178,6 +260,7 @@ export default function OpenWorldPage() {
   const scenarioConfigured = Boolean(flight?.drone_id);
   const simClock = flight ? new Date(flight.sim_time * 1000).toISOString().slice(11, 19) : "00:00:00";
   const visibleTelemetryHistory = flight?.scenario_id ? telemetryHistory : [];
+  const activeRF = rfState && rfState.scenario_id && rfState.scenario_id === flight?.scenario_id ? rfState : null;
 
   const recordWorldEvent = useCallback((message: string) => {
     setWorldEvents((previous) => [message, ...previous].slice(0, 12));
@@ -340,6 +423,19 @@ export default function OpenWorldPage() {
             <small>{scenarioConfigured ? "Reset scenario to change wind." : "Applied as a deterministic virtual disturbance on start."}</small>
           </label>
 
+          <div className="open-world-section-divider">SYNTHETIC RF CONFIGURATION</div>
+          <label className="open-world-field">
+            <span>Illustrative RF profile</span>
+            <select value={rfProfile} disabled={scenarioConfigured} onChange={(event) => setRFProfile(event.target.value as RFProfileId)}>
+              {RF_PROFILES.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+            </select>
+            <small>Approximate synthetic model; not protocol identification.</small>
+          </label>
+          <label className="open-world-range-field">
+            <span>Virtual interference <strong>{interferenceDb} dB</strong></span>
+            <input type="range" min={0} max={30} step={1} value={interferenceDb} disabled={scenarioConfigured} onChange={(event) => setInterferenceDb(Number(event.target.value))} />
+          </label>
+
           <div className="open-world-section-divider">DESTINATION · SAFE ZONE-01</div>
           <div className="open-world-config-facts">
             <MetricRow label="X / Z" value={`${destination.x} / ${destination.z} m`} />
@@ -429,13 +525,45 @@ export default function OpenWorldPage() {
             <MetricRow label="POSITION ESTIMATION ERROR" value={flight?.drone_id ? `${flight.estimation_error_m.toFixed(2)} m · simulated` : "—"} />
           </section>
 
-          <section>
-            <div className="open-world-panel-heading">SYNTHETIC RF ANALYSIS</div>
-            <MetricRow label="RF ENGINE" value="IDLE" />
-            <MetricRow label="SOURCE" value="—" />
-            <MetricRow label="PROFILE" value="—" />
-            <MetricRow label="CHANNEL EVENTS" value="0" />
-            <p className="open-world-hint">RF activity begins only with an explicitly started simulation.</p>
+          <section className="open-world-rf-section">
+            <div className="open-world-panel-heading">SYNTHETIC RF & HOPPING <span>{activeRF?.status?.toUpperCase() ?? "IDLE"}</span></div>
+            {activeRF ? (
+              <>
+                <MetricRow label="SOURCE · PROFILE" value={`${activeRF.source_id} · ${activeRF.profile_label}`} />
+                <MetricRow label="FREQUENCY · BANDWIDTH" value={`${activeRF.current_frequency_mhz?.toFixed(3) ?? "—"} · ${activeRF.bandwidth_mhz?.toFixed(1) ?? "—"} MHz`} />
+                <MetricRow label="RECEIVED · NOISE" value={`${activeRF.received_power_dbm?.toFixed(1) ?? "—"} · ${activeRF.noise_floor_dbm?.toFixed(1) ?? "—"} dBm`} />
+                <MetricRow label="SIGNAL / NOISE" value={`${activeRF.snr_db?.toFixed(1) ?? "—"} dB · ${activeRF.distance_m?.toFixed(0) ?? "—"} m range`} />
+                <MetricRow label="EVENTS · MISSING" value={`${activeRF.observed_event_count} / ${activeRF.missing_event_count} of ${activeRF.expected_event_count}`} />
+                <MetricRow label="CHANNEL CHANGES · CHANNELS" value={`${activeRF.observed_channel_changes} · ${activeRF.observed_channel_count}`} />
+                <MetricRow label="EST. DWELL · HOP RATE" value={`${activeRF.estimated_dwell_ms?.toFixed(2) ?? "—"} ms · ${activeRF.estimated_hop_rate_hz?.toFixed(1) ?? "—"} Hz`} />
+                <MetricRow label="OCCUPIED RANGE" value={activeRF.occupied_frequency_range_mhz ? `${activeRF.occupied_frequency_range_mhz[0].toFixed(2)}–${activeRF.occupied_frequency_range_mhz[1].toFixed(2)} MHz` : "—"} />
+                <MetricRow label="SEQUENCE PERIODICITY" value={activeRF.sequence_periodicity ? `${activeRF.sequence_periodicity} events · estimated` : "Not detected"} />
+                <div className="open-world-rf-classification">{activeRF.classification} · {((activeRF.classification_confidence ?? 0) * 100).toFixed(0)}% confidence · synthetic</div>
+                <div className="open-world-rf-subheading">LIVE SPECTRUM · {activeRF.center_frequency_mhz?.toFixed(1)} MHz CENTER</div>
+                <SpectrumPlot rf={activeRF} />
+                <div className="open-world-rf-axis"><span>{activeRF.center_frequency_mhz != null && activeRF.bandwidth_mhz != null ? (activeRF.center_frequency_mhz - activeRF.bandwidth_mhz / 2).toFixed(1) : "—"} MHz</span><span>SIMULATED POWER · dB</span><span>{activeRF.center_frequency_mhz != null && activeRF.bandwidth_mhz != null ? (activeRF.center_frequency_mhz + activeRF.bandwidth_mhz / 2).toFixed(1) : "—"} MHz</span></div>
+                <div className="open-world-rf-subheading">FREQUENCY × TIME · GENERATED AND OBSERVED</div>
+                <HoppingPlot rf={activeRF} />
+                <div className="open-world-rf-legend"><span>GENERATED SEQUENCE</span><span>OBSERVED EVENTS</span></div>
+                <div className="open-world-rf-subheading">CHANNEL OCCUPANCY</div>
+                <OccupancyBars rf={activeRF} />
+                <div className="open-world-rf-distributions">
+                  <div><span>BURST DURATIONS · ms</span><DistributionBars values={activeRF.burst_duration_distribution_ms} label="Recent synthetic burst duration distribution" /></div>
+                  <div><span>INTER-BURST · ms</span><DistributionBars values={activeRF.inter_burst_intervals_ms} label="Recent synthetic inter-burst interval distribution" /></div>
+                </div>
+                <div className="open-world-rf-subheading">HOPPING EVENT TIMELINE</div>
+                {activeRF.observed_events.slice(-6).reverse().map((event) => (
+                  <div className="open-world-rf-event" key={event.event_index}>
+                    <time>{event.sim_time.toFixed(2)} s</time>
+                    <span>CH {String(event.channel_index + 1).padStart(2, "0")} · {event.frequency_mhz.toFixed(3)} MHz</span>
+                    <b>{event.duration_ms.toFixed(1)} ms</b>
+                  </div>
+                ))}
+                <p className="open-world-hint">Illustrative synthetic RF only. Classification is approximate and unconfirmed.</p>
+              </>
+            ) : (
+              <p className="open-world-hint">RF events, spectrum, and hopping analysis remain idle until a flight scenario starts.</p>
+            )}
           </section>
 
           <section className="open-world-event-section">

@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from typing import Literal
 from time import monotonic
 
-SIM_VERSION = "0.1.0"
+from simulation.open_world_rf import OpenWorldRFSource, RF_PROFILES, RF_SIM_VERSION, idle_rf_state
+
+SIM_VERSION = RF_SIM_VERSION
 MAX_WORLD_METERS = 6_000
 
 
@@ -33,6 +35,8 @@ class FlightConfig:
     wind_speed_mps: float = 0
     destination_x_m: float = 3_100
     destination_z_m: float = 850
+    rf_profile: str = "generic_fhss"
+    interference_db: float = 0.0
 
 
 class OpenWorldSimulation:
@@ -53,6 +57,7 @@ class OpenWorldSimulation:
         self.acceleration = 0.0
         self._last_tick: float | None = None
         self._config_hash = ""
+        self.rf_source: OpenWorldRFSource | None = None
 
     def start(self, config: FlightConfig) -> dict:
         if self.status in {"active", "paused"}:
@@ -68,12 +73,17 @@ class OpenWorldSimulation:
         for value in (config.destination_x_m, config.destination_z_m):
             if abs(value) > MAX_WORLD_METERS:
                 raise ValueError("Destination must be inside the 12 km world")
+        if config.rf_profile not in RF_PROFILES:
+            raise ValueError("Unsupported synthetic RF profile")
+        if not 0 <= config.interference_db <= 30:
+            raise ValueError("interference_db must be between 0 and 30")
 
         self.config = config
         canonical = (
-            f"{config.seed}:{config.spawn_distance_m}:{config.initial_altitude_m}:"
+            f"{SIM_VERSION}:{config.seed}:{config.spawn_distance_m}:{config.initial_altitude_m}:"
             f"{config.max_speed_mps}:{config.wind_speed_mps}:"
-            f"{config.destination_x_m}:{config.destination_z_m}"
+            f"{config.destination_x_m}:{config.destination_z_m}:"
+            f"{config.rf_profile}:{config.interference_db}"
         )
         self._config_hash = hashlib.sha256(canonical.encode()).hexdigest()
         # Separate deterministic spawn generation: same config yields same spawn.
@@ -97,6 +107,13 @@ class OpenWorldSimulation:
         self.drone_id = f"DRN-{self._config_hash[8:14].upper()}"
         self.status = "active"
         self._last_tick = monotonic()
+        self.rf_source = OpenWorldRFSource(
+            self.scenario_id,
+            config.seed,
+            config.rf_profile,
+            config.interference_db,
+            self._config_hash,
+        )
         return self.snapshot()
 
     def pause(self) -> dict:
@@ -135,6 +152,7 @@ class OpenWorldSimulation:
         self.vertical_speed = 0.0
         self.acceleration = 0.0
         self._last_tick = None
+        self.rf_source = None
         return self.snapshot()
 
     def _destination(self) -> tuple[float, float]:
@@ -267,6 +285,8 @@ class OpenWorldSimulation:
             "position": {"x": round(x, 2), "y": round(y, 2), "z": round(z, 2)},
             "spawn": {"x": round(self.spawn[0], 2), "y": round(self.spawn[1], 2), "z": round(self.spawn[2], 2)},
             "destination": {"x": self.config.destination_x_m, "y": terrain_height(self.config.destination_x_m, self.config.destination_z_m, self.config.seed), "z": self.config.destination_z_m, "radius_m": 150},
+            "rf_profile": self.config.rf_profile,
+            "interference_db": self.config.interference_db,
             "speed_mps": round(self.speed, 2),
             "heading_deg": round(self.heading, 1),
             "distance_remaining_m": round(distance, 2),
@@ -281,3 +301,17 @@ class OpenWorldSimulation:
             "estimation_error_m": round(position_error, 2),
             "source": "simulated",
         }
+
+    def rf_snapshot(self) -> dict:
+        if self.rf_source is None or self.status == "standby":
+            return idle_rf_state()
+        state = self.snapshot()
+        return self.rf_source.snapshot(self.sim_time, state["position"], self.status)
+
+    def combined_snapshot(self) -> dict:
+        flight = self.snapshot()
+        if self.rf_source is None or self.status == "standby":
+            rf = idle_rf_state()
+        else:
+            rf = self.rf_source.snapshot(self.sim_time, flight["position"], self.status)
+        return {"flight": flight, "rf": rf}

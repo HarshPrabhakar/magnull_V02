@@ -7,8 +7,10 @@ def generate_spectrum(
     bins: int = 512,
     seed: int = 42,
     frame_id: int = 0,
+    peak_specs: list[tuple[int, int, float]] | None = None,
+    noise_floor_db: float = -80.0,
 ) -> dict:
-    """Generate reproducible synthetic spectrum data with stable signal positions."""
+    """Generate reproducible synthetic spectrum data, optionally using known event peaks."""
 
     if bins < 32 or bins > 4096:
         raise ValueError("bins must be between 32 and 4096")
@@ -32,7 +34,9 @@ def generate_spectrum(
     frame_seed = (seed + frame_id * 104729) % (2**32)
     frame_rng = np.random.default_rng(frame_seed)
 
-    noise_floor = -80.0
+    if not np.isfinite(noise_floor_db):
+        raise ValueError("noise_floor_db must be finite")
+    noise_floor = float(noise_floor_db)
     power = noise_floor + frame_rng.normal(0.0, 2.0, bins)
 
     peak_counts = {
@@ -42,16 +46,25 @@ def generate_spectrum(
         "multi": 6,
     }
 
-    for _ in range(peak_counts[scenario]):
-        center = int(
-            signal_rng.integers(bins // 10, bins - bins // 10)
-        )
-        width = int(signal_rng.integers(2, 8))
-        base_amplitude = float(signal_rng.uniform(12.0, 28.0))
+    is_custom = peak_specs is not None
+    if peak_specs is None:
+        specs = [
+            (
+                int(signal_rng.integers(bins // 10, bins - bins // 10)),
+                int(signal_rng.integers(2, 8)),
+                float(signal_rng.uniform(12.0, 28.0)),
+            )
+            for _ in range(peak_counts[scenario])
+        ]
+    else:
+        specs = peak_specs
 
-        # Small controlled variation instead of relocating the peak.
-        amplitude_variation = float(frame_rng.normal(0.0, 0.6))
-        amplitude = max(1.0, base_amplitude + amplitude_variation)
+    for center, width, base_amplitude in specs:
+        if not 0 <= center < bins or not 1 <= width <= bins // 2 or not np.isfinite(base_amplitude):
+            raise ValueError("peak_specs must contain valid finite spectrum peaks")
+        # Keep event locations stable while deterministic frame noise changes their level slightly.
+        amplitude_variation = float(frame_rng.normal(0.0, 0.3 if is_custom else 0.6))
+        amplitude = max(0.0, float(base_amplitude) + amplitude_variation)
 
         start = max(0, center - width * 3)
         end = min(bins, center + width * 3 + 1)

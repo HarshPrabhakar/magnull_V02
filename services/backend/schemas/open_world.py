@@ -1,6 +1,7 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from schemas.open_world_rf import RFProfileId
 
 
 class FlightStartRequest(BaseModel):
@@ -13,6 +14,8 @@ class FlightStartRequest(BaseModel):
     wind_speed_mps: float = Field(ge=0, le=20)
     destination_x_m: float = Field(ge=-6_000, le=6_000)
     destination_z_m: float = Field(ge=-6_000, le=6_000)
+    rf_profile: RFProfileId = "generic_fhss"
+    interference_db: float = Field(default=0, ge=0, le=30)
 
 
 class FlightTelemetry(BaseModel):
@@ -42,6 +45,8 @@ class FlightState(BaseModel):
     position: dict[str, float]
     spawn: dict[str, float]
     destination: dict[str, float]
+    rf_profile: RFProfileId
+    interference_db: float
     speed_mps: float
     heading_deg: float
     distance_remaining_m: float

@@ -11,6 +11,8 @@ export type FlightState = {
   position: { x: number; y: number; z: number };
   spawn: { x: number; y: number; z: number };
   destination: { x: number; y: number; z: number; radius_m: number };
+  rf_profile: RFProfileId;
+  interference_db: number;
   speed_mps: number;
   heading_deg: number;
   distance_remaining_m: number;
@@ -25,6 +27,66 @@ export type FlightState = {
   estimation_error_m: number;
   source: "simulated";
 };
+
+export type RFProfileId = "generic_fhss" | "elrs_like" | "ocusync_like" | "afhds_like" | "analog_fpv_like" | "unknown_hopping";
+
+export type RFEvent = {
+  event_index: number;
+  sim_time: number;
+  channel_index: number;
+  frequency_mhz: number;
+  duration_ms: number;
+  received_power_dbm: number;
+  visible: boolean;
+};
+
+export type ChannelOccupancy = {
+  channel_index: number;
+  frequency_mhz: number;
+  event_count: number;
+  occupancy_percent: number;
+};
+
+export type OpenWorldRFState = {
+  scenario_id: string | null;
+  seed: number;
+  sim_version: string;
+  config_hash: string;
+  sim_time: number;
+  status: "idle" | "active" | "paused" | "stopped" | "complete";
+  source_id: string | null;
+  profile: RFProfileId | null;
+  profile_label: string | null;
+  classification: string | null;
+  classification_confidence: number | null;
+  center_frequency_mhz: number | null;
+  bandwidth_mhz: number | null;
+  current_frequency_mhz: number | null;
+  distance_m: number | null;
+  received_power_dbm: number | null;
+  noise_floor_dbm: number | null;
+  snr_db: number | null;
+  expected_event_count: number;
+  observed_event_count: number;
+  missing_event_count: number;
+  observed_channel_changes: number;
+  estimated_dwell_ms: number | null;
+  estimated_hop_rate_hz: number | null;
+  observed_channel_count: number;
+  occupied_frequency_range_mhz: number[] | null;
+  sequence_periodicity: number | null;
+  channel_occupancy: ChannelOccupancy[];
+  burst_duration_distribution_ms: number[];
+  inter_burst_intervals_ms: number[];
+  generated_events: RFEvent[];
+  observed_events: RFEvent[];
+  spectrum_frequency_mhz: number[];
+  spectrum_power_db: number[];
+  source: "simulated";
+  synthetic: true;
+};
+
+export type OpenWorldSimulationSnapshot = { flight: FlightState; rf: OpenWorldRFState };
 
 export type FlightTelemetry = {
   position: { x: number; y: number; z: number };
@@ -99,6 +161,8 @@ function normalizeFlightState(value: unknown): FlightState {
       ...pointOr(state.destination, { x: 0, y: 0, z: 0 }),
       radius_m: numberOr(state.destination?.radius_m, 150),
     },
+    rf_profile: state.rf_profile ?? "generic_fhss",
+    interference_db: numberOr(state.interference_db),
     speed_mps: groundTruth.speed_mps,
     heading_deg: groundTruth.heading_deg,
     distance_remaining_m: groundTruth.distance_remaining_m,
@@ -137,5 +201,19 @@ export const startFlight = (config: {
   wind_speed_mps: number;
   destination_x_m: number;
   destination_z_m: number;
+    rf_profile: RFProfileId;
+    interference_db: number;
 }) => request("start", "POST", config);
 export const controlFlight = (action: "pause" | "resume" | "stop" | "reset") => request(action, "POST");
+export async function fetchOpenWorldRFState(): Promise<OpenWorldRFState> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/open-world/rf/state`);
+  if (!response.ok) throw new Error(`RF simulation request failed: HTTP ${response.status}`);
+  return await response.json() as OpenWorldRFState;
+}
+
+export async function fetchOpenWorldSnapshot(): Promise<OpenWorldSimulationSnapshot> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/open-world/snapshot`);
+  if (!response.ok) throw new Error(`Open World snapshot failed: HTTP ${response.status}`);
+  const payload = await response.json() as { flight: unknown; rf: OpenWorldRFState };
+  return { flight: normalizeFlightState(payload.flight), rf: payload.rf };
+}
