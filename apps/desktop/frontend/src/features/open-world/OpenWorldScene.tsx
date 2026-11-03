@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -101,7 +101,8 @@ function appendLocalSegment(
 function appendBuildingWireframe(
   lines: number[], seed: number, cx: number, cz: number,
   width: number, depth: number, height: number, rotation: number,
-  kind: "industrial" | "administrative" | "utility",
+  kind: "industrial" | "administrative" | "utility" | "house",
+  roofStyle = 0,
 ) {
   const base = terrainHeight(cx, cz, seed) + 4;
   const halfW = width / 2;
@@ -120,23 +121,99 @@ function appendBuildingWireframe(
   corners.forEach(([x, z]) => appendLocalSegment(lines, cx, cz, rotation,
     [x, base, z], [x, base + height, z]));
 
-  if (kind === "industrial") {
+  if (kind === "industrial" || (kind === "house" && roofStyle % 3 !== 2)) {
     const ridgeHeight = base + height + Math.min(55, depth * 0.12);
+    const ridgeX = roofStyle % 3 === 1 ? halfW * 0.18 : 0;
     for (const endZ of [-halfD, halfD]) {
       appendLocalSegment(lines, cx, cz, rotation,
-        [-halfW, base + height, endZ], [0, ridgeHeight, endZ]);
+        [-halfW, base + height, endZ], [ridgeX, ridgeHeight, endZ]);
       appendLocalSegment(lines, cx, cz, rotation,
-        [0, ridgeHeight, endZ], [halfW, base + height, endZ]);
+        [ridgeX, ridgeHeight, endZ], [halfW, base + height, endZ]);
     }
     appendLocalSegment(lines, cx, cz, rotation,
-      [0, ridgeHeight, -halfD], [0, ridgeHeight, halfD]);
-    for (let x = -halfW + 55; x < halfW - 25; x += 85) {
+      [ridgeX, ridgeHeight, -halfD], [ridgeX, ridgeHeight, halfD]);
+    for (let x = -halfW + (kind === "house" ? 35 : 55); x < halfW - 25; x += kind === "house" ? 70 : 85) {
       appendLocalSegment(lines, cx, cz, rotation,
         [x, base + height + 12, -halfD + 8], [x, base + height + 12, halfD - 8]);
     }
+    // Eaves, roof rafters and a short ridge make the residential silhouette
+    // legible from oblique and top-down views.
+    if (kind === "house") {
+      for (const side of [-1, 1]) {
+        const eaveX = side * halfW;
+        for (let z = -halfD; z <= halfD; z += Math.max(40, depth / 3)) {
+          appendLocalSegment(lines, cx, cz, rotation,
+            [eaveX, base + height, z], [ridgeX, ridgeHeight, z]);
+        }
+      }
+      if (roofStyle % 3 === 1) {
+        const extension = width * 0.08;
+        appendLocalSegment(lines, cx, cz, rotation,
+          [-halfW - extension, base + height - 5, -halfD - 10],
+          [halfW + extension, base + height - 5, -halfD - 10]);
+      }
+    }
   }
 
-  const floors = kind === "administrative" ? 3 : kind === "utility" ? 1 : 2;
+  if (kind === "house" && roofStyle % 3 === 2) {
+    // Flat-roof, stepped residential variant from the wireframe reference.
+    const upperW = halfW * 0.64;
+    const upperD = halfD * 0.62;
+    const upperY = base + height * 0.72;
+    const upper = [[-upperW, -upperD], [upperW, -upperD], [upperW, upperD], [-upperW, upperD]] as const;
+    upper.forEach((corner, index) => {
+      const next = upper[(index + 1) % upper.length];
+      appendLocalSegment(lines, cx, cz, rotation,
+        [corner[0], upperY, corner[1]], [next[0], upperY, next[1]]);
+      appendLocalSegment(lines, cx, cz, rotation,
+        [corner[0], upperY, corner[1]], [corner[0], base + height, corner[1]]);
+    });
+    upper.forEach((corner, index) => appendLocalSegment(lines, cx, cz, rotation,
+      [corner[0], base + height, corner[1]], [upper[(index + 1) % upper.length][0], base + height, upper[(index + 1) % upper.length][1]]));
+  }
+
+  const floors = kind === "administrative" ? 3 : kind === "utility" ? 1 : kind === "house" ? (roofStyle % 3 === 1 ? 2 : 1) : 2;
+  if (kind === "house") {
+    // Framed windows and a clear entrance on all four facades.
+    const windowW = Math.max(18, Math.min(34, width * 0.13));
+    const windowH = Math.max(22, Math.min(32, height * 0.3));
+    const facadeZ = [-halfD - 1, halfD + 1];
+    const facadeX = [-halfW - 1, halfW + 1];
+    const windowColumns = width > 150 ? [-0.28, 0.28] : [0];
+    const addWindow = (wx: number, wy: number, wz: number, axis: "x" | "z") => {
+      const corners: XYZ[] = axis === "z"
+        ? [[wx - windowW / 2, wy - windowH / 2, wz], [wx + windowW / 2, wy - windowH / 2, wz], [wx + windowW / 2, wy + windowH / 2, wz], [wx - windowW / 2, wy + windowH / 2, wz]]
+        : [[wx, wy - windowH / 2, wz - windowW / 2], [wx, wy - windowH / 2, wz + windowW / 2], [wx, wy + windowH / 2, wz + windowW / 2], [wx, wy + windowH / 2, wz - windowW / 2]];
+      corners.forEach((point, index) => appendLocalSegment(lines, cx, cz, rotation, point, corners[(index + 1) % corners.length]));
+      appendLocalSegment(lines, cx, cz, rotation, corners[0], corners[2]);
+      appendLocalSegment(lines, cx, cz, rotation, corners[1], corners[3]);
+    };
+    for (const z of facadeZ) {
+      windowColumns.forEach((ratio) => addWindow(ratio * width, base + height * 0.58, z, "z"));
+      // Offset the door from the facade center so it does not overlap a window.
+      const doorX = halfW * 0.48;
+      appendLocalSegment(lines, cx, cz, rotation, [doorX - 16, base, z], [doorX - 16, base + height * 0.62, z]);
+      appendLocalSegment(lines, cx, cz, rotation, [doorX + 16, base, z], [doorX + 16, base + height * 0.62, z]);
+      appendLocalSegment(lines, cx, cz, rotation, [doorX - 16, base + height * 0.62, z], [doorX + 16, base + height * 0.62, z]);
+    }
+    for (const x of facadeX) windowColumns.forEach((ratio) => addWindow(x, base + height * 0.58, ratio * depth, "x"));
+    if (roofStyle % 3 === 0) {
+      const chimneyX = -halfW * 0.55;
+      const chimneyZ = halfD * 0.3;
+      const chimneyW = Math.max(16, width * 0.09);
+      const chimneyBase = base + height + Math.min(55, depth * 0.12) * 0.45;
+      const chimneyTop = chimneyBase + height * 0.34;
+      const chimneyCorners: XYZ[] = [[chimneyX - chimneyW / 2, chimneyBase, chimneyZ - chimneyW / 2], [chimneyX + chimneyW / 2, chimneyBase, chimneyZ - chimneyW / 2], [chimneyX + chimneyW / 2, chimneyBase, chimneyZ + chimneyW / 2], [chimneyX - chimneyW / 2, chimneyBase, chimneyZ + chimneyW / 2]];
+      chimneyCorners.forEach((point, index) => {
+        const next = chimneyCorners[(index + 1) % chimneyCorners.length];
+        appendLocalSegment(lines, cx, cz, rotation, point, next);
+        appendLocalSegment(lines, cx, cz, rotation, point, [point[0], chimneyTop, point[2]]);
+        appendLocalSegment(lines, cx, cz, rotation, [point[0], chimneyTop, point[2]], [next[0], chimneyTop, next[2]]);
+      });
+    }
+    return;
+  }
+
   for (let floor = 0; floor < floors; floor += 1) {
     const y = base + (floor + 0.55) * height / floors;
     const windowCount = kind === "industrial" ? 3 : Math.max(3, Math.floor(width / 55));
@@ -200,13 +277,15 @@ function Buildings({ seed, center }: { seed: number; center: WorldPoint }) {
       const x = THREE.MathUtils.clamp(center.x + site.x, -5_650, 5_650);
       const z = THREE.MathUtils.clamp(center.z + site.z, -5_650, 5_650);
       if (Math.hypot(x - center.x, z - center.z) < 620) return;
-      const industrial = index % 5 < 2;
-      const administrative = index % 5 === 2;
-      const kind = industrial ? "industrial" : administrative ? "administrative" : "utility";
-      const width = (industrial ? 250 : administrative ? 145 : 85) * site.scale;
-      const depth = (industrial ? 190 : administrative ? 125 : 75) * site.scale;
-      const height = (industrial ? 105 : administrative ? 75 : 40) * site.scale;
-      appendBuildingWireframe(lines, seed, x, z, width, depth, height, (index % 8) * Math.PI / 8, kind);
+      const type = index % 8;
+      const industrial = type < 2;
+      const administrative = type === 2;
+      const house = type >= 3 && type <= 5;
+      const kind = industrial ? "industrial" : administrative ? "administrative" : house ? "house" : "utility";
+      const width = (industrial ? 250 : administrative ? 145 : house ? 115 : 85) * site.scale;
+      const depth = (industrial ? 190 : administrative ? 125 : house ? 95 : 75) * site.scale;
+      const height = (industrial ? 105 : administrative ? 75 : house ? 62 : 40) * site.scale;
+      appendBuildingWireframe(lines, seed, x, z, width, depth, height, (index % 8) * Math.PI / 8, kind, index + seed);
     });
     return makeLineGeometry(lines);
   }, [center.x, center.z, seed]);
@@ -215,83 +294,105 @@ function Buildings({ seed, center }: { seed: number; center: WorldPoint }) {
 }
 
 function Forest({ seed, center }: { seed: number; center: WorldPoint }) {
-  const trunksRef = useRef<THREE.InstancedMesh>(null);
-  const coneCrownsRef = useRef<THREE.InstancedMesh>(null);
-  const icoCrownsRef = useRef<THREE.InstancedMesh>(null);
-  const trees = useMemo(() => seededPositions(seed + 307, 240, 9_000), [seed]);
-  const branches = useMemo(() => {
+  const geometry = useMemo(() => {
     const lines: number[] = [];
+    const trees = seededPositions(seed + 307, 190, 9_000);
     trees.forEach((tree, index) => {
       const x = THREE.MathUtils.clamp(center.x + tree.x, -5_700, 5_700);
       const z = THREE.MathUtils.clamp(center.z + tree.z, -5_700, 5_700);
       const scale = tree.scale;
       const base = terrainHeight(x, z, seed);
-      const height = (index % 4 === 0 ? 62 : 105) * scale;
-      const branchCount = index % 4 === 0 ? 5 : 7;
-      for (let branch = 0; branch < branchCount; branch += 1) {
-        const angle = branch * Math.PI * (3 - Math.sqrt(5)) + index * 0.31;
-        const startY = base + height * (0.28 + (branch % 3) * 0.09);
-        const reach = (27 + (branch % 2) * 12) * scale;
-        const middle: XYZ = [x + Math.cos(angle) * reach * 0.45, startY + reach * 0.55, z + Math.sin(angle) * reach * 0.45];
-        const tip: XYZ = [x + Math.cos(angle) * reach, startY + reach, z + Math.sin(angle) * reach];
-        appendSegment(lines, [x, startY - 12 * scale, z], middle);
-        appendSegment(lines, middle, tip);
+      const conifer = index % 5 === 0;
+      const height = (conifer ? 145 : 115) * scale;
+      const top: XYZ = [x, base + height, z];
+      appendSegment(lines, [x, base, z], top);
+
+      if (conifer) {
+        // Layered, open branch whorls create a cypress or evergreen silhouette.
+        for (let tier = 0; tier < 8; tier += 1) {
+          const t = tier / 8;
+          const y = base + height * (0.18 + t * 0.7);
+          const radius = height * (0.31 * (1 - t) + 0.035) * scale;
+          const rotation = index * 0.17 + tier * 0.13;
+          const ring: XYZ[] = [];
+          for (let point = 0; point < 9; point += 1) {
+            const angle = rotation + (point / 8) * Math.PI * 2;
+            ring.push([x + Math.cos(angle) * radius, y, z + Math.sin(angle) * radius]);
+          }
+          for (let point = 1; point < ring.length; point += 1) appendSegment(lines, ring[point - 1], ring[point]);
+          for (let point = 0; point < 8; point += 1) {
+            const angle = rotation + (point / 8) * Math.PI * 2;
+            const branchTip: XYZ = [x + Math.cos(angle) * radius, y + height * 0.14, z + Math.sin(angle) * radius];
+            appendSegment(lines, [x, y - height * 0.045, z], branchTip);
+          }
+        }
+      } else {
+        // Branching deciduous frame with several open, faceted canopy lobes.
+        const canopyCenterY = base + height * 0.72;
+        const branchLevels = [0.35, 0.49, 0.62];
+        const lobeCenters: XYZ[] = [];
+        branchLevels.forEach((level, levelIndex) => {
+          const branchStart: XYZ = [x, base + height * level, z];
+          const count = levelIndex === 2 ? 5 : 4;
+          for (let branch = 0; branch < count; branch += 1) {
+            const angle = index * 0.29 + branch * Math.PI * 2 / count + levelIndex * 0.41;
+            const reach = height * (0.28 + levelIndex * 0.035) * scale;
+            const end: XYZ = [x + Math.cos(angle) * reach, base + height * (level + 0.17), z + Math.sin(angle) * reach];
+            const fork: XYZ = [x + Math.cos(angle) * reach * 0.55, end[1] + height * 0.07, z + Math.sin(angle) * reach * 0.55];
+            appendSegment(lines, branchStart, fork);
+            appendSegment(lines, fork, end);
+            for (const split of [-1, 1]) {
+              const sideAngle = angle + split * 0.72;
+              const twig: XYZ = [end[0] + Math.cos(sideAngle) * reach * 0.34, end[1] + height * 0.08, end[2] + Math.sin(sideAngle) * reach * 0.34];
+              appendSegment(lines, end, twig);
+              lobeCenters.push([twig[0], canopyCenterY + (branch % 2 ? 8 : -7) * scale, twig[2]]);
+            }
+          }
+        });
+
+        // A light 3D mesh around the branching skeleton gives the canopy its
+        // fine netted outline without using solid or photographic foliage.
+        const lobeRadius = 23 * scale;
+        lobeCenters.forEach(([lx, ly, lz], lobeIndex) => {
+          const ringCount = 3;
+          const segments = 9;
+          const rings: XYZ[][] = [];
+          for (let ring = 0; ring < ringCount; ring += 1) {
+            const latitude = -0.58 + ring * 0.58;
+            let previous: XYZ | undefined;
+            const vertices: XYZ[] = [];
+            for (let point = 0; point <= segments; point += 1) {
+              const angle = point / segments * Math.PI * 2;
+              const jitter = 0.88 + 0.12 * Math.sin(angle * 3 + lobeIndex * 1.7 + index);
+              const vertex: XYZ = [
+                lx + Math.cos(angle) * Math.cos(latitude) * lobeRadius * jitter,
+                ly + Math.sin(latitude) * lobeRadius * 0.82 * jitter,
+                lz + Math.sin(angle) * Math.cos(latitude) * lobeRadius * jitter,
+              ];
+              if (previous) appendSegment(lines, previous, vertex);
+              previous = vertex;
+              vertices.push(vertex);
+            }
+            rings.push(vertices);
+          }
+          for (let ring = 1; ring < rings.length; ring += 1) {
+            for (let point = 0; point <= segments; point += 1) {
+              appendSegment(lines, rings[ring - 1][point], rings[ring][point]);
+            }
+          }
+          for (let spoke = 0; spoke < 5; spoke += 1) {
+            const angle = spoke * Math.PI * 2 / 5 + index * 0.13;
+            appendSegment(lines,
+              [lx, ly - lobeRadius * 0.82, lz],
+              [lx + Math.cos(angle) * lobeRadius, ly, lz + Math.sin(angle) * lobeRadius]);
+          }
+        });
       }
     });
     return makeLineGeometry(lines);
-  }, [center.x, center.z, seed, trees]);
+  }, [center.x, center.z, seed]);
 
-  useLayoutEffect(() => {
-    const trunks = trunksRef.current;
-    const cones = coneCrownsRef.current;
-    const icos = icoCrownsRef.current;
-    if (!trunks || !cones || !icos) return;
-    const transform = new THREE.Object3D();
-    let coneIndex = 0;
-    let icoIndex = 0;
-
-    trees.forEach((tree, index) => {
-      const x = THREE.MathUtils.clamp(center.x + tree.x, -5_700, 5_700);
-      const z = THREE.MathUtils.clamp(center.z + tree.z, -5_700, 5_700);
-      const ground = terrainHeight(x, z, seed);
-      const tall = index % 4 !== 0;
-      transform.position.set(x, ground + (tall ? 28 : 19) * tree.scale, z);
-      transform.scale.set(tree.scale * 0.72, tree.scale * (tall ? 1.1 : 0.7), tree.scale * 0.72);
-      transform.updateMatrix();
-      trunks.setMatrixAt(index, transform.matrix);
-
-      transform.position.y = ground + (tall ? 70 : 44) * tree.scale;
-      transform.scale.setScalar(tree.scale);
-      transform.rotation.set(0, index * 0.7, 0);
-      transform.updateMatrix();
-      if (tall) cones.setMatrixAt(coneIndex++, transform.matrix);
-      else icos.setMatrixAt(icoIndex++, transform.matrix);
-    });
-
-    trunks.instanceMatrix.needsUpdate = true;
-    cones.instanceMatrix.needsUpdate = true;
-    icos.instanceMatrix.needsUpdate = true;
-    cones.count = coneIndex;
-    icos.count = icoIndex;
-  }, [center.x, center.z, seed, trees]);
-
-  return (
-    <>
-      <lineSegments geometry={branches} frustumCulled><lineBasicMaterial color="#55bfb5" transparent opacity={0.85} /></lineSegments>
-      <instancedMesh ref={trunksRef} args={[undefined, undefined, trees.length]}>
-        <cylinderGeometry args={[5, 8, 34, 5]} />
-        <meshBasicMaterial color="#4eb8ad" wireframe />
-      </instancedMesh>
-      <instancedMesh ref={coneCrownsRef} args={[undefined, undefined, trees.length]}>
-        <coneGeometry args={[38, 92, 7, 2]} />
-        <meshBasicMaterial color="#51c9bb" wireframe />
-      </instancedMesh>
-      <instancedMesh ref={icoCrownsRef} args={[undefined, undefined, trees.length]}>
-        <icosahedronGeometry args={[43, 1]} />
-        <meshBasicMaterial color="#64bcb3" wireframe />
-      </instancedMesh>
-    </>
-  );
+  return <lineSegments geometry={geometry} frustumCulled><lineBasicMaterial color="#55bfb5" transparent opacity={0.86} /></lineSegments>;
 }
 
 function WorldMarkers({
