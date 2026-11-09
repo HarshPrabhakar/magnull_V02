@@ -19,11 +19,20 @@ def terrain_height(x: float, z: float, seed: int) -> float:
     ridge = math.sin(x * 0.00058 + phase) * math.cos(z * 0.00047 - phase)
     hills = math.sin((x + z) * 0.00024 + phase * 1.7) * 0.58
     valley = math.sin((x - z) * 0.00019 - phase * 0.8) * 0.34
-    peak_x = math.sin(phase * 1.3) * 2_500
-    peak_z = math.cos(phase * 0.9) * 2_700
-    peak = max(0.0, 1 - math.hypot(x - peak_x, z - peak_z) / 3_600) ** 2 * 780
-    far_peak = max(0.0, 1 - math.hypot(x + 3_100, z - 2_100) / 2_700) ** 2 * 520
-    return 90 + ridge * 330 + hills * 230 + valley * 125 + peak + far_peak
+    basin_x = 3_100 + math.sin(phase * 0.73) * 240
+    basin_z = 850 + math.cos(phase * 0.91) * 240
+    mountains = 0.0
+    for peak_index in range(6):
+        angle = phase * 0.22 + peak_index * math.pi / 3
+        radius = 4_000 + 260 * math.sin(phase + peak_index * 1.91)
+        peak_x = basin_x + math.cos(angle) * radius
+        peak_z = basin_z + math.sin(angle) * radius
+        width = 980 + 180 * (0.5 + 0.5 * math.sin(phase * 1.3 + peak_index * 2.17))
+        height = 720 + 260 * (0.5 + 0.5 * math.cos(phase * 0.8 + peak_index * 1.61))
+        distance = math.hypot(x - peak_x, z - peak_z)
+        mountains += height * math.exp(-0.5 * (distance / width) ** 2)
+
+    return 150 + ridge * 200 + hills * 125 + valley * 70 + mountains
 
 
 @dataclass
