@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import type { RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -84,6 +85,14 @@ function seededFacilitySites(seed: number) {
   };
 }
 
+function seededRadarSite(seed: number) {
+  const [site] = seededPositions(seed + 913, 1, 520);
+  return {
+    x: 4_280 + Math.abs(site.x),
+    z: -4_280 - Math.abs(site.z),
+  };
+}
+
 type XYZ = [number, number, number];
 
 function appendSegment(lines: number[], from: XYZ, to: XYZ) {
@@ -93,22 +102,6 @@ function appendSegment(lines: number[], from: XYZ, to: XYZ) {
 function makeLineGeometry(lines: number[]) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
-  return geometry;
-}
-
-function createRadarSweepGeometry(radius: number, halfAngle: number) {
-  const geometry = new THREE.BufferGeometry();
-  const positions = [0, 0, 0];
-  const indices: number[] = [];
-  const segments = 36;
-  for (let step = 0; step <= segments; step += 1) {
-    const angle = -halfAngle + (2 * halfAngle * step) / segments;
-    positions.push(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
-    if (step > 0) indices.push(0, step, step + 1);
-  }
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
   return geometry;
 }
 
@@ -616,105 +609,205 @@ function RadarTargetMarker({ flight }: { flight: FlightState }) {
   );
 }
 
-function RadarInstallation({ seed, flight }: { seed: number; flight: FlightState | null }) {
-  const scannerRef = useRef<THREE.Group>(null);
-  const lastSimTimeRef = useRef(flight?.sim_time ?? 0);
-  const displayTimeRef = useRef(flight?.sim_time ?? 0);
-  const sweepGeometry = useMemo(() => createRadarSweepGeometry(1_650, Math.PI / 10), []);
-  const [site] = useMemo(() => seededPositions(seed + 913, 1, 520), [seed]);
-  const position = {
-    x: 4_280 + Math.abs(site.x),
-    z: -4_280 - Math.abs(site.z),
-  };
-  const ground = terrainHeight(position.x, position.z, seed);
-  const tracking = flight?.status === "active" && Boolean(flight.drone_id);
-  const label = flight?.status === "paused"
-    ? "RADAR · PAUSED"
-    : tracking
-      ? `RADAR · TRACKING ${flight?.drone_id}`
-      : flight?.status === "active"
-        ? "RADAR · SCANNING"
-        : "RADAR · STANDBY";
-  const labelColor = tracking ? "#49dcca" : flight?.status === "paused" ? "#ffbd4a" : "#8ba3ad";
+const RADAR_SCOPE_CENTER = { x: 160, y: 190 };
+const RADAR_SCOPE_RADIUS = 102;
+const RADAR_SCOPE_RANGE_M = 12_000;
+
+type RadarScopeRefs = {
+  sweep: RefObject<SVGGElement | null>;
+  target: RefObject<SVGGElement | null>;
+  trail: RefObject<SVGPolylineElement | null>;
+  targetLabel: RefObject<SVGTextElement | null>;
+  bearing: RefObject<SVGTextElement | null>;
+};
+
+function RadarScopeController({
+  seed,
+  flight,
+  refs,
+}: {
+  seed: number;
+  flight: FlightState | null;
+  refs: RadarScopeRefs;
+}) {
+  const lastSimTime = useRef(flight?.sim_time ?? 0);
+  const displaySimTime = useRef(flight?.sim_time ?? 0);
+  const sweepAngle = useRef(0);
+  const pulseTime = useRef(0);
+  const radarSite = useMemo(() => seededRadarSite(seed), [seed]);
 
   useFrame((_, delta) => {
-    if (flight?.status !== "active" || !scannerRef.current) return;
-    if (flight.sim_time !== lastSimTimeRef.current) {
-      lastSimTimeRef.current = flight.sim_time;
-      displayTimeRef.current = flight.sim_time;
-    } else {
-      displayTimeRef.current += Math.min(delta, 0.05);
+    const active = flight?.status === "active";
+    const step = Math.min(delta, 0.05);
+    if (active && flight) {
+      if (flight.sim_time !== lastSimTime.current) {
+        lastSimTime.current = flight.sim_time;
+        displaySimTime.current = flight.sim_time;
+      } else {
+        displaySimTime.current += step;
+      }
+      pulseTime.current += step;
+
+      if (flight.drone_id) {
+        const dx = flight.position.x - radarSite.x;
+        const dz = flight.position.z - radarSite.z;
+        const targetAngle = Math.atan2(dx, dz);
+        const difference = Math.atan2(
+          Math.sin(targetAngle - sweepAngle.current),
+          Math.cos(targetAngle - sweepAngle.current),
+        );
+        sweepAngle.current += difference * (1 - Math.exp(-4.5 * delta));
+      } else {
+        sweepAngle.current = (displaySimTime.current * Math.PI / 2) % (Math.PI * 2);
+      }
     }
 
-    if (tracking && flight) {
-      const dx = flight.position.x - position.x;
-      const dz = flight.position.z - position.z;
-      const targetYaw = Math.atan2(dx, dz);
-      const currentYaw = scannerRef.current.rotation.y;
-      const difference = Math.atan2(Math.sin(targetYaw - currentYaw), Math.cos(targetYaw - currentYaw));
-      scannerRef.current.rotation.y = currentYaw + difference * (1 - Math.exp(-4.5 * delta));
-    } else {
-      scannerRef.current.rotation.y = (displayTimeRef.current * Math.PI / 2) % (Math.PI * 2);
+    const degrees = (sweepAngle.current * 180) / Math.PI;
+    refs.sweep.current?.setAttribute(
+      "transform",
+      `rotate(${degrees} ${RADAR_SCOPE_CENTER.x} ${RADAR_SCOPE_CENTER.y})`,
+    );
+
+    if (!flight?.drone_id) {
+      refs.target.current?.setAttribute("visibility", "hidden");
+      refs.trail.current?.setAttribute("visibility", "hidden");
+      refs.targetLabel.current?.setAttribute("visibility", "hidden");
+      if (refs.bearing.current) refs.bearing.current.textContent = "BEARING: — · RANGE: —";
+      return;
+    }
+
+    const dx = flight.position.x - radarSite.x;
+    const dz = flight.position.z - radarSite.z;
+    const distance = Math.hypot(dx, dz);
+    const scale = (RADAR_SCOPE_RADIUS * Math.min(distance, RADAR_SCOPE_RANGE_M * 0.92))
+      / (RADAR_SCOPE_RANGE_M * Math.max(distance, 1));
+    const targetX = RADAR_SCOPE_CENTER.x + dx * scale;
+    const targetY = RADAR_SCOPE_CENTER.y - dz * scale;
+    const pulse = active ? 0.92 + 0.12 * (0.5 + 0.5 * Math.sin(pulseTime.current * 5.5)) : 1;
+    refs.target.current?.setAttribute("visibility", "visible");
+    refs.target.current?.setAttribute("transform", `translate(${targetX} ${targetY}) scale(${pulse})`);
+    refs.target.current?.setAttribute("opacity", active ? String(0.55 + 0.45 * (0.5 + 0.5 * Math.sin(pulseTime.current * 8))) : "1");
+    refs.trail.current?.setAttribute("visibility", "visible");
+    const spawnDx = flight.spawn.x - radarSite.x;
+    const spawnDz = flight.spawn.z - radarSite.z;
+    const spawnScale = (RADAR_SCOPE_RADIUS * Math.min(Math.hypot(spawnDx, spawnDz), RADAR_SCOPE_RANGE_M * 0.92))
+      / (RADAR_SCOPE_RANGE_M * Math.max(Math.hypot(spawnDx, spawnDz), 1));
+    refs.trail.current?.setAttribute(
+      "points",
+      `${RADAR_SCOPE_CENTER.x + spawnDx * spawnScale},${RADAR_SCOPE_CENTER.y - spawnDz * spawnScale} ${targetX},${targetY}`,
+    );
+    refs.targetLabel.current?.setAttribute("visibility", "visible");
+    refs.targetLabel.current?.setAttribute("x", String(targetX + (targetX > RADAR_SCOPE_CENTER.x ? -66 : 10)));
+    refs.targetLabel.current?.setAttribute("y", String(targetY + (targetY < RADAR_SCOPE_CENTER.y ? 14 : -8)));
+    const bearingDegrees = (degrees + 360) % 360;
+    if (refs.bearing.current) {
+      refs.bearing.current.textContent = `BEARING: ${bearingDegrees.toFixed(0).padStart(3, "0")}° · RANGE: ${(distance / 1_000).toFixed(2)} KM`;
     }
   });
 
+  return null;
+}
+
+function RadarScopeOverlay({ flight, refs }: { flight: FlightState | null; refs: RadarScopeRefs }) {
+  const linked = Boolean(flight?.drone_id);
+  const status = flight?.status === "active"
+    ? linked ? "TRACK LOCK" : "SWEEPING"
+    : flight?.status === "paused" ? "PAUSED" : "STANDBY";
+  const statusColor = flight?.status === "active" ? "#75e8cf" : flight?.status === "paused" ? "#ffc45b" : "#8199a3";
+  const targetProfile = flight?.rf_profile.replaceAll("_", "-").toUpperCase() ?? "NO TARGET";
+
+  const degrees = Array.from({ length: 12 }, (_, index) => index * 30);
+  const polar = (radius: number, angle: number) => ({
+    x: RADAR_SCOPE_CENTER.x + Math.sin((angle * Math.PI) / 180) * radius,
+    y: RADAR_SCOPE_CENTER.y - Math.cos((angle * Math.PI) / 180) * radius,
+  });
+  const halfAngle = Math.PI / 10;
+  const sweepStart = polar(RADAR_SCOPE_RADIUS, -halfAngle * 180 / Math.PI);
+  const sweepEnd = polar(RADAR_SCOPE_RADIUS, halfAngle * 180 / Math.PI);
+  const sweepPath = `M ${RADAR_SCOPE_CENTER.x} ${RADAR_SCOPE_CENTER.y} L ${sweepStart.x} ${sweepStart.y} A ${RADAR_SCOPE_RADIUS} ${RADAR_SCOPE_RADIUS} 0 0 1 ${sweepEnd.x} ${sweepEnd.y} Z`;
+
   return (
-    <group position={[position.x, ground, position.z]}>
-      <mesh position={[0, 22, 0]}>
-        <boxGeometry args={[260, 44, 240]} />
-        <meshBasicMaterial color="#58cfc6" wireframe />
-      </mesh>
-      <mesh position={[0, 165, 0]}>
-        <cylinderGeometry args={[68, 98, 250, 6, 3]} />
-        <meshBasicMaterial color="#4fbdb5" wireframe />
-      </mesh>
-      <Line points={[[-110, 48, -100], [-50, 280, -45], [0, 330, 0], [50, 280, 45], [110, 48, 100]]} color="#4fbdb5" lineWidth={1.5} />
-      <Line points={[[110, 48, -100], [50, 280, -45], [0, 330, 0], [-50, 280, 45], [-110, 48, 100]]} color="#4fbdb5" lineWidth={1.5} />
-      <group ref={scannerRef}>
-        <mesh geometry={sweepGeometry} position={[0, 18, 0]} frustumCulled={false}>
-          <meshBasicMaterial color="#49dcca" transparent opacity={0.085} side={THREE.DoubleSide} depthWrite={false} />
-        </mesh>
-        <Line points={[[0, 22, 0], [0, 22, 1_650]]} color="#49dcca" lineWidth={2} transparent opacity={0.9} />
-        <group position={[0, 350, 0]}>
-          <Line points={[[0, -15, 0], [0, 10, 95], [0, 32, 145]]} color="#79e7dc" lineWidth={2} />
-          <mesh position={[0, 32, 145]}>
-            <circleGeometry args={[86, 32]} />
-            <meshBasicMaterial color="#63d9ce" wireframe side={THREE.DoubleSide} />
-          </mesh>
-          <mesh position={[0, 32, 145]}>
-            <torusGeometry args={[86, 4, 6, 32]} />
-            <meshBasicMaterial color="#8fffee" wireframe />
-          </mesh>
-          {[0, 1, 2, 3, 4, 5, 6, 7].map((spoke) => {
-            const angle = spoke * Math.PI / 4;
-            return (
-              <Line
-                key={spoke}
-                points={[[0, 32, 145], [Math.cos(angle) * 86, 32 + Math.sin(angle) * 86, 145]]}
-                color="#63d9ce"
-                lineWidth={1}
-              />
-            );
+    <div style={{ position: "absolute", inset: 0, zIndex: 4, pointerEvents: "none" }}>
+      <div
+        role="group"
+        aria-label="Simulated radar geolocation and trajectory display"
+        style={{
+          position: "absolute",
+          top: 12,
+          right: 12,
+          width: "min(320px, calc(100% - 24px))",
+          boxSizing: "border-box",
+          padding: "8px 9px 7px",
+          color: "#8fded5",
+          background: "rgba(2, 12, 18, 0.94)",
+          border: "1px solid #3c8f86",
+          boxShadow: "0 0 16px rgba(52, 213, 190, 0.16), inset 0 0 18px rgba(32, 115, 109, 0.08)",
+          fontFamily: 'Consolas, "Courier New", monospace',
+          fontSize: 8,
+          letterSpacing: 0.75,
+          lineHeight: 1.2,
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        <svg viewBox="0 0 320 360" width="100%" aria-hidden="true" style={{ display: "block", overflow: "visible" }}>
+          <text x="2" y="14" fill="#b4e4dd" fontSize="8" letterSpacing="1.05">TARGET GEOLOCATION &amp; TRAJECTORY MAP</text>
+          <path d="M 0 22 H 320" stroke="#28615e" strokeWidth="1" />
+          <circle cx="5" cy="37" r="2.3" fill={statusColor} />
+          <text x="12" y="40" fill={statusColor} fontSize="7.2">SIM LINK: {status}</text>
+          <text x="318" y="40" fill="#8bb8b1" fontSize="7" textAnchor="end">SWEEP RATE: 90°/S</text>
+          <text x="2" y="54" fill="#719b96" fontSize="6.7">SEED {flight?.seed ?? "—"} · SIM {flight ? `${flight.sim_time.toFixed(1)} S` : "IDLE"}</text>
+          <text x="318" y="54" fill="#719b96" fontSize="6.7" textAnchor="end">RANGE 12 KM</text>
+
+          <defs>
+            <clipPath id="mag-null-radar-scope-clip">
+              <circle cx={RADAR_SCOPE_CENTER.x} cy={RADAR_SCOPE_CENTER.y} r={RADAR_SCOPE_RADIUS} />
+            </clipPath>
+            <radialGradient id="mag-null-radar-scope-fill">
+              <stop offset="0%" stopColor="#0b383b" stopOpacity="0.62" />
+              <stop offset="100%" stopColor="#04181e" stopOpacity="0.22" />
+            </radialGradient>
+          </defs>
+          <circle cx={RADAR_SCOPE_CENTER.x} cy={RADAR_SCOPE_CENTER.y} r={RADAR_SCOPE_RADIUS} fill="url(#mag-null-radar-scope-fill)" />
+          <g stroke="#18565a" strokeWidth="0.7" fill="none">
+            {[25.5, 51, 76.5, RADAR_SCOPE_RADIUS].map((radius) => (
+              <circle key={radius} cx={RADAR_SCOPE_CENTER.x} cy={RADAR_SCOPE_CENTER.y} r={radius} />
+            ))}
+            <path d={`M ${RADAR_SCOPE_CENTER.x - RADAR_SCOPE_RADIUS} ${RADAR_SCOPE_CENTER.y} H ${RADAR_SCOPE_CENTER.x + RADAR_SCOPE_RADIUS}`} />
+            <path d={`M ${RADAR_SCOPE_CENTER.x} ${RADAR_SCOPE_CENTER.y - RADAR_SCOPE_RADIUS} V ${RADAR_SCOPE_CENTER.y + RADAR_SCOPE_RADIUS}`} />
+          </g>
+          {[3, 6, 9, 12].map((distance, index) => (
+            <text key={distance} x={RADAR_SCOPE_CENTER.x + 3} y={RADAR_SCOPE_CENTER.y - [25.5, 51, 76.5, RADAR_SCOPE_RADIUS][index] + 8} fill="#45827f" fontSize="5.8">{distance} KM</text>
+          ))}
+          <g stroke="#3b7773" strokeWidth="0.8">
+            {degrees.map((degree) => {
+              const outer = polar(109, degree);
+              const inner = polar(102, degree);
+              return <path key={degree} d={`M ${inner.x} ${inner.y} L ${outer.x} ${outer.y}`} />;
+            })}
+          </g>
+          {degrees.map((degree) => {
+            const point = polar(119, degree);
+            return <text key={degree} x={point.x} y={point.y + 2.5} fill="#658d89" fontSize="5.7" textAnchor="middle">{String(degree).padStart(3, "0")}</text>;
           })}
-          <Line points={[[-160, 0, 110], [0, 12, 0], [160, 0, 110]]} color="#58cfc6" lineWidth={2} />
-        </group>
-      </group>
-      {tracking && flight && (
-        <Line
-          points={[[0, 25, 0], [flight.position.x - position.x, flight.position.y - ground, flight.position.z - position.z]]}
-          color="#49dcca"
-          lineWidth={1}
-          transparent
-          opacity={0.58}
-          dashed
-          dashSize={90}
-          gapSize={60}
-        />
-      )}
-      <Html position={[0, 555, 0]} center distanceFactor={6_500}>
-        <span className="world-marker-label" style={{ color: labelColor }}>{label}</span>
-      </Html>
-    </group>
+          <g ref={refs.sweep} clipPath="url(#mag-null-radar-scope-clip)">
+            <path d={sweepPath} fill="#3fe0cb" fillOpacity="0.21" />
+            <path d={`M ${RADAR_SCOPE_CENTER.x} ${RADAR_SCOPE_CENTER.y} L ${RADAR_SCOPE_CENTER.x} ${RADAR_SCOPE_CENTER.y - RADAR_SCOPE_RADIUS}`} stroke="#77ffec" strokeWidth="1.4" strokeOpacity="0.9" />
+          </g>
+          <polyline ref={refs.trail} points="" fill="none" stroke="#dbc476" strokeWidth="1" strokeDasharray="2 4" visibility="hidden" />
+          <g ref={refs.target} visibility={linked ? "visible" : "hidden"}>
+            <circle r="8" fill="none" stroke="#64f3df" strokeWidth="1.1" />
+            <circle r="3" fill="#aafff2" />
+            <path d="M -12 0 H -5 M 5 0 H 12 M 0 -12 V -5 M 0 5 V 12" stroke="#72ffe9" strokeWidth="0.8" />
+          </g>
+          <text ref={refs.targetLabel} x="0" y="0" fill="#aafff2" fontSize="6.5" visibility="hidden">{flight?.drone_id ?? ""}</text>
+          <text x="2" y="324" fill="#8fded5" fontSize="6.8">{linked ? `${flight?.drone_id} · ${targetProfile} (SIMULATED)` : "NO ACTIVE SIMULATED TARGET"}</text>
+          <text ref={refs.bearing} x="318" y="324" fill="#b6d8d3" fontSize="6.8" textAnchor="end">BEARING: — · RANGE: —</text>
+          <path d="M 0 334 H 320" stroke="#28615e" strokeWidth="1" />
+          <text x="2" y="347" fill="#70b7ac" fontSize="6.2">VIRTUAL SENSOR · PASSIVE SIMULATION</text>
+          <text x="318" y="347" fill="#d1b873" fontSize="6.2" textAnchor="end">SYNTHETIC DATA</text>
+        </svg>
+      </div>
+    </div>
   );
 }
 
@@ -982,78 +1075,88 @@ export function OpenWorldScene({
   flight: FlightState | null;
   onTerrainClick: (point: WorldPoint) => void;
 }) {
+  const radarScopeRefs: RadarScopeRefs = {
+    sweep: useRef<SVGGElement>(null),
+    target: useRef<SVGGElement>(null),
+    trail: useRef<SVGPolylineElement>(null),
+    targetLabel: useRef<SVGTextElement>(null),
+    bearing: useRef<SVGTextElement>(null),
+  };
   const night = settings.lighting === "night";
   const background = night
     ? "#02060c"
     : "#040b12";
   const cameraTarget: [number, number, number] = [0, terrainHeight(0, 0, seed) + 180, 0];
   return (
-    <Canvas
-      camera={{ position: [cameraTarget[0] + 6_500, cameraTarget[1] + 6_500, cameraTarget[2] + 6_500], fov: 42, near: 10, far: 30_000 }}
-      dpr={[1, 1.5]}
-      frameloop={flight?.status === "active" ? "always" : "demand"}
-      gl={{ antialias: true, powerPreference: "low-power", alpha: false }}
-      className="open-world-canvas"
-    >
-      <color attach="background" args={[background]} />
-      <fog
-        attach="fog"
-        args={[background, Math.min(4_500, settings.visibilityMeters * 0.45), settings.visibilityMeters]}
-      />
-      <ambientLight intensity={night ? 0.18 : mode === "technical" ? 0.6 : 1.1} />
-      <directionalLight
-        position={night ? [1_000, 5_000, -3_000] : [-3_000, 7_000, 2_000]}
-        intensity={night ? 0.35 : mode === "technical" ? 1.1 : 2.2}
-      />
-      <Terrain seed={seed} mode={mode} settings={settings} onTerrainClick={onTerrainClick} />
-      {settings.coordinateGrid && <Grid
-        position={[0, -150, 0]}
-        args={[WORLD_SIZE_METERS, WORLD_SIZE_METERS]}
-        cellSize={500}
-        sectionSize={2_000}
-        cellColor={mode === "technical" ? "#155057" : "#52625b"}
-        sectionColor={mode === "technical" ? "#28716c" : "#829083"}
-        cellThickness={0.45}
-        sectionThickness={0.8}
-        fadeDistance={11_000}
-        fadeStrength={1.5}
-        infiniteGrid={false}
-      />}
-      {!settings.terrainVisible && (
-        <mesh
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, -800, 0]}
-          onClick={(event) => {
-            event.stopPropagation();
-            onTerrainClick({ x: event.point.x, z: event.point.z });
-          }}
-        >
-          <planeGeometry args={[WORLD_SIZE_METERS, WORLD_SIZE_METERS]} />
-          <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
-        </mesh>
-      )}
-      {settings.roadsVisible && <WorldRoad seed={seed} />}
-      {settings.buildingsVisible && (
-        <>
-          <Buildings seed={seed} />
-          <MonitoringOutpost seed={seed} center={destinationPoint} />
-        </>
-      )}
-      {settings.forestVisible && <Forest seed={seed} center={destinationPoint} />}
-      <RadarInstallation seed={seed} flight={flight} />
-      <MonitoringZones seed={seed} center={destinationPoint} />
-      <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} />
+    <div style={{ position: "absolute", inset: 0 }}>
+      <Canvas
+        camera={{ position: [cameraTarget[0] + 6_500, cameraTarget[1] + 6_500, cameraTarget[2] + 6_500], fov: 42, near: 10, far: 30_000 }}
+        dpr={[1, 1.5]}
+        frameloop={flight?.status === "active" ? "always" : "demand"}
+        gl={{ antialias: true, powerPreference: "low-power", alpha: false }}
+        className="open-world-canvas"
+      >
+        <color attach="background" args={[background]} />
+        <fog
+          attach="fog"
+          args={[background, Math.min(4_500, settings.visibilityMeters * 0.45), settings.visibilityMeters]}
+        />
+        <ambientLight intensity={night ? 0.18 : mode === "technical" ? 0.6 : 1.1} />
+        <directionalLight
+          position={night ? [1_000, 5_000, -3_000] : [-3_000, 7_000, 2_000]}
+          intensity={night ? 0.35 : mode === "technical" ? 1.1 : 2.2}
+        />
+        <Terrain seed={seed} mode={mode} settings={settings} onTerrainClick={onTerrainClick} />
+        {settings.coordinateGrid && <Grid
+          position={[0, -150, 0]}
+          args={[WORLD_SIZE_METERS, WORLD_SIZE_METERS]}
+          cellSize={500}
+          sectionSize={2_000}
+          cellColor={mode === "technical" ? "#155057" : "#52625b"}
+          sectionColor={mode === "technical" ? "#28716c" : "#829083"}
+          cellThickness={0.45}
+          sectionThickness={0.8}
+          fadeDistance={11_000}
+          fadeStrength={1.5}
+          infiniteGrid={false}
+        />}
+        {!settings.terrainVisible && (
+          <mesh
+            rotation={[-Math.PI / 2, 0, 0]}
+            position={[0, -800, 0]}
+            onClick={(event) => {
+              event.stopPropagation();
+              onTerrainClick({ x: event.point.x, z: event.point.z });
+            }}
+          >
+            <planeGeometry args={[WORLD_SIZE_METERS, WORLD_SIZE_METERS]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
+          </mesh>
+        )}
+        {settings.roadsVisible && <WorldRoad seed={seed} />}
+        {settings.buildingsVisible && (
+          <>
+            <Buildings seed={seed} />
+            <MonitoringOutpost seed={seed} center={destinationPoint} />
+          </>
+        )}
+        {settings.forestVisible && <Forest seed={seed} center={destinationPoint} />}
+        <RadarScopeController seed={seed} flight={flight} refs={radarScopeRefs} />
+        <MonitoringZones seed={seed} center={destinationPoint} />
+        <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} />
 
-      <OrbitControls
-        makeDefault
-        enableDamping
-        dampingFactor={0.08}
-        minDistance={1_200}
-        maxDistance={15_000}
-        maxPolarAngle={Math.PI * 0.49}
-        target={cameraTarget}
-      />
-      <CameraRig command={cameraCommand} seed={seed} />
-    </Canvas>
+        <OrbitControls
+          makeDefault
+          enableDamping
+          dampingFactor={0.08}
+          minDistance={1_200}
+          maxDistance={15_000}
+          maxPolarAngle={Math.PI * 0.49}
+          target={cameraTarget}
+        />
+        <CameraRig command={cameraCommand} seed={seed} />
+      </Canvas>
+      <RadarScopeOverlay flight={flight} refs={radarScopeRefs} />
+    </div>
   );
 }
