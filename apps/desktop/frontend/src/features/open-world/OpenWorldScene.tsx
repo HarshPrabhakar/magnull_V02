@@ -23,7 +23,7 @@ export type CameraCommand = {
 };
 
 const WORLD_SIZE_METERS = 12_000;
-const TERRAIN_SEGMENTS = 112;
+const TERRAIN_SEGMENTS = 192;
 
 function createTerrainGeometry(seed: number): THREE.PlaneGeometry {
   const geometry = new THREE.PlaneGeometry(
@@ -272,21 +272,68 @@ function Terrain({
 function Buildings({ seed, center }: { seed: number; center: WorldPoint }) {
   const geometry = useMemo(() => {
     const lines: number[] = [];
-    const sites = seededPositions(seed + 91, 150, 7_200);
-    sites.forEach((site, index) => {
-      const x = THREE.MathUtils.clamp(center.x + site.x, -5_650, 5_650);
-      const z = THREE.MathUtils.clamp(center.z + site.z, -5_650, 5_650);
-      if (Math.hypot(x - center.x, z - center.z) < 620) return;
-      const type = index % 8;
-      const industrial = type < 2;
-      const administrative = type === 2;
-      const house = type >= 3 && type <= 5;
-      const kind = industrial ? "industrial" : administrative ? "administrative" : house ? "house" : "utility";
-      const width = (industrial ? 250 : administrative ? 145 : house ? 115 : 85) * site.scale;
-      const depth = (industrial ? 190 : administrative ? 125 : house ? 95 : 75) * site.scale;
-      const height = (industrial ? 105 : administrative ? 75 : house ? 62 : 40) * site.scale;
-      appendBuildingWireframe(lines, seed, x, z, width, depth, height, (index % 8) * Math.PI / 8, kind, index + seed);
-    });
+    const angle = (((seed * 0.61803398875) % 1) + 1) % 1 * Math.PI * 2;
+    const rotation = -angle;
+    const secondary = {
+      x: THREE.MathUtils.clamp(center.x + Math.cos(angle) * 2_050, -4_850, 4_850),
+      z: THREE.MathUtils.clamp(center.z + Math.sin(angle) * 2_050, -4_850, 4_850),
+    };
+
+    const appendCompound = (
+      cx: number, cz: number, halfWidth: number, halfDepth: number,
+      gateSide: "positive-x" | "negative-x",
+    ) => {
+      const corners: Array<[number, number]> = [
+        [-halfWidth, -halfDepth], [halfWidth, -halfDepth],
+        [halfWidth, halfDepth], [-halfWidth, halfDepth],
+      ];
+      corners.forEach((corner, index) => {
+        const next = corners[(index + 1) % corners.length];
+        const gateEdge = gateSide === "positive-x" ? index === 1 : index === 3;
+        const edgeParts: Array<[[number, number], [number, number]]> = gateEdge
+          ? gateSide === "positive-x"
+            ? [[[halfWidth, -halfDepth], [halfWidth, -175]], [[halfWidth, 175], [halfWidth, halfDepth]]]
+            : [[[-halfWidth, -halfDepth], [-halfWidth, -175]], [[-halfWidth, 175], [-halfWidth, halfDepth]]]
+          : [[corner, next]];
+        edgeParts.forEach(([fromLocal, toLocal]) => {
+          const from = localPoint(cx, cz, rotation, fromLocal[0], fromLocal[1]);
+          const to = localPoint(cx, cz, rotation, toLocal[0], toLocal[1]);
+          appendSegment(lines,
+            [from[0], terrainHeight(from[0], from[1], seed) + 14, from[1]],
+            [to[0], terrainHeight(to[0], to[1], seed) + 14, to[1]]);
+        });
+      });
+      for (const x of [-halfWidth, halfWidth]) {
+        for (let z = -halfDepth; z <= halfDepth; z += 150) {
+          const point = localPoint(cx, cz, rotation, x, z);
+          const ground = terrainHeight(point[0], point[1], seed) + 14;
+          const top = localPoint(cx, cz, rotation, x, z);
+          appendSegment(lines, [point[0], ground, point[1]], [top[0], ground + 54, top[1]]);
+        }
+      }
+      for (const z of [-halfDepth, halfDepth]) {
+        for (let x = -halfWidth; x <= halfWidth; x += 150) {
+          const point = localPoint(cx, cz, rotation, x, z);
+          const ground = terrainHeight(point[0], point[1], seed) + 14;
+          appendSegment(lines, [point[0], ground, point[1]], [point[0], ground + 54, point[1]]);
+        }
+      }
+    };
+
+    // Facility A: the primary command and monitoring installation with an
+    // attached side wing, enclosed by its own compound.
+    appendCompound(center.x, center.z, 760, 620, "positive-x");
+    appendBuildingWireframe(lines, seed, center.x, center.z, 570, 410, 235, rotation, "administrative");
+    const wingA = localPoint(center.x, center.z, rotation, -365, 0);
+    appendBuildingWireframe(lines, seed, wingA[0], wingA[1], 270, 285, 155, rotation, "administrative");
+
+    // Facility B: a distinct industrial profile, separated by over 2 km and
+    // aligned with the seeded road corridor.
+    appendCompound(secondary.x, secondary.z, 720, 565, "negative-x");
+    appendBuildingWireframe(lines, seed, secondary.x, secondary.z, 630, 390, 195, rotation + 0.12, "industrial");
+    const wingB = localPoint(secondary.x, secondary.z, rotation, 385, 0);
+    appendBuildingWireframe(lines, seed, wingB[0], wingB[1], 290, 240, 132, rotation, "utility");
+
     return makeLineGeometry(lines);
   }, [center.x, center.z, seed]);
 
@@ -503,65 +550,61 @@ function DroneModel({ flight }: { flight: FlightState }) {
 function WorldRoad({ seed, center }: { seed: number; center: WorldPoint }) {
   const roads = useMemo(() => {
     const main: number[] = [];
-    const secondary: number[] = [];
     const markings: number[] = [];
-    const roadY = (x: number, z: number) => terrainHeight(x, z, seed) + 8;
-    const verticals = [-5_000, -3_200, -1_400, 400, 2_200, 4_000, 5_700];
-    const horizontals = [-5_400, -3_600, -1_800, 0, 1_800, 3_600, 5_400];
+    const angle = (((seed * 0.61803398875) % 1) + 1) % 1 * Math.PI * 2;
+    const direction = new THREE.Vector2(Math.cos(angle), Math.sin(angle));
+    const lateral = new THREE.Vector2(-direction.y, direction.x);
+    const secondary = new THREE.Vector2(
+      THREE.MathUtils.clamp(center.x + direction.x * 2_050, -4_850, 4_850),
+      THREE.MathUtils.clamp(center.z + direction.y * 2_050, -4_850, 4_850),
+    );
+    const roadPoint = (point: THREE.Vector2, lift = 16) => new THREE.Vector3(
+      point.x,
+      terrainHeight(point.x, point.y, seed) + lift,
+      point.y,
+    );
+    const curve = new THREE.CatmullRomCurve3([
+      roadPoint(new THREE.Vector2(center.x + direction.x * 790, center.z + direction.y * 790)),
+      roadPoint(new THREE.Vector2(center.x + direction.x * 1_250 + lateral.x * 260, center.z + direction.y * 1_250 + lateral.y * 260)),
+      roadPoint(new THREE.Vector2(secondary.x - direction.x * 1_180 + lateral.x * 330, secondary.y - direction.y * 1_180 + lateral.y * 330)),
+      roadPoint(new THREE.Vector2(secondary.x - direction.x * 745, secondary.y - direction.y * 745)),
+    ], false, "centripetal");
+    const samples = curve.getPoints(220);
 
-    const addRoad = (axis: "x" | "z", fixed: number, width: number, target: number[]) => {
-      const half = width / 2;
-      for (const edge of [-half, half]) {
-        const points: XYZ[] = [];
-        for (let step = 0; step <= 50; step += 1) {
-          const along = -5_900 + (11_800 * step) / 50;
-          const x = axis === "x" ? along : fixed + edge;
-          const z = axis === "z" ? along : fixed + edge;
-          points.push([x, roadY(x, z), z]);
-        }
-        for (let index = 1; index < points.length; index += 1) {
-          appendSegment(target, points[index - 1], points[index]);
-        }
+    // A three-lane corridor: two shoulders, two lane dividers, and the road
+    // boundaries follow the same spline and sample the terrain at every point.
+    const offsets = [-142, -112, -37, 37, 112, 142];
+    const paths = offsets.map(() => [] as XYZ[]);
+    samples.forEach((point, index) => {
+      const before = samples[Math.max(0, index - 1)];
+      const after = samples[Math.min(samples.length - 1, index + 1)];
+      const dx = after.x - before.x;
+      const dz = after.z - before.z;
+      const length = Math.max(0.001, Math.hypot(dx, dz));
+      const normalX = -dz / length;
+      const normalZ = dx / length;
+      offsets.forEach((offset, pathIndex) => {
+        const x = point.x + normalX * offset;
+        const z = point.z + normalZ * offset;
+        paths[pathIndex].push([x, terrainHeight(x, z, seed) + (pathIndex === 0 || pathIndex === 5 ? 18 : 20), z]);
+      });
+    });
+    paths.forEach((path, pathIndex) => {
+      const target = pathIndex === 1 || pathIndex === 4 ? markings : main;
+      const dashed = pathIndex === 1 || pathIndex === 4;
+      for (let index = 1; index < path.length; index += 1) {
+        if (dashed && Math.floor(index / 7) % 2 === 1) continue;
+        appendSegment(target, path[index - 1], path[index]);
       }
-    };
+    });
 
-    verticals.forEach((x, index) => addRoad("z", x + (seed % 71) - 35, index === 3 ? 155 : 95, index === 3 ? main : secondary));
-    horizontals.forEach((z, index) => addRoad("x", z + (seed % 53) - 26, index === 3 ? 155 : 95, index === 3 ? main : secondary));
-
-    // Two curved access spurs connect the nearest road junctions to SAFE ZONE-01.
-    for (const direction of [-1, 1]) {
-      const startX = THREE.MathUtils.clamp(center.x + direction * 1_500, -5_800, 5_800);
-      const startZ = THREE.MathUtils.clamp(center.z - 1_250, -5_800, 5_800);
-      const controlX = center.x + direction * 700;
-      const samples = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(startX, roadY(startX, startZ) + 4, startZ),
-        new THREE.Vector3(controlX, roadY(controlX, startZ - 100) + 4, startZ - 100),
-        new THREE.Vector3(center.x, roadY(center.x, center.z) + 4, center.z),
-      ]).getPoints(36);
-      for (const side of [-1, 1]) {
-        for (let index = 1; index < samples.length; index += 1) {
-          const from = samples[index - 1].clone();
-          const to = samples[index].clone();
-          from.x += side * 42; to.x += side * 42;
-          appendSegment(main, [from.x, from.y, from.z], [to.x, to.y, to.z]);
-        }
-      }
-    }
-
-    for (let x = -5_700; x < 5_700; x += 240) {
-      if (Math.abs(x - center.x) < 850) continue;
-      const z = THREE.MathUtils.clamp((seed % 53) - 26, -5_700, 5_700);
-      appendSegment(markings, [x, roadY(x, z) + 12, z - 4], [x + 115, roadY(x + 115, z) + 12, z - 4]);
-    }
-
-    return { main: makeLineGeometry(main), secondary: makeLineGeometry(secondary), markings: makeLineGeometry(markings) };
+    return { main: makeLineGeometry(main), markings: makeLineGeometry(markings) };
   }, [center.x, center.z, seed]);
 
   return (
     <group>
-      <lineSegments geometry={roads.secondary} frustumCulled><lineBasicMaterial color="#2a7778" transparent opacity={0.58} /></lineSegments>
       <lineSegments geometry={roads.main} frustumCulled><lineBasicMaterial color="#69d6d0" transparent opacity={0.9} /></lineSegments>
-      <lineSegments geometry={roads.markings} frustumCulled><lineBasicMaterial color="#8de3d7" transparent opacity={0.72} /></lineSegments>
+      <lineSegments geometry={roads.markings} frustumCulled><lineBasicMaterial color="#8de3d7" transparent opacity={0.88} /></lineSegments>
     </group>
   );
 }
@@ -569,22 +612,6 @@ function WorldRoad({ seed, center }: { seed: number; center: WorldPoint }) {
 function MonitoringOutpost({ seed, center }: { seed: number; center: WorldPoint }) {
   const geometry = useMemo(() => {
     const lines: number[] = [];
-    const perimeter = 520;
-    const corners: Array<[number, number]> = [
-      [center.x - perimeter, center.z - perimeter], [center.x + perimeter, center.z - perimeter],
-      [center.x + perimeter, center.z + perimeter], [center.x - perimeter, center.z + perimeter],
-    ];
-    corners.forEach((corner, index) => {
-      const next = corners[(index + 1) % corners.length];
-      appendSegment(lines, [corner[0], terrainHeight(corner[0], corner[1], seed) + 12, corner[1]],
-        [next[0], terrainHeight(next[0], next[1], seed) + 12, next[1]]);
-    });
-
-    appendBuildingWireframe(lines, seed, center.x, center.z, 270, 220, 145, 0, "administrative");
-    appendBuildingWireframe(lines, seed, center.x - 300, center.z - 250, 125, 100, 58, 0.18, "utility");
-    appendBuildingWireframe(lines, seed, center.x + 300, center.z + 235, 140, 110, 70, -0.2, "utility");
-    appendBuildingWireframe(lines, seed, center.x + 320, center.z - 270, 105, 95, 46, 0.35, "utility");
-
     const sensors = Array.from({ length: 6 }, (_, index) => {
       const angle = index * Math.PI / 3 + (seed % 17) * 0.025;
       return { x: center.x + Math.cos(angle) * 650, z: center.z + Math.sin(angle) * 650, angle };
