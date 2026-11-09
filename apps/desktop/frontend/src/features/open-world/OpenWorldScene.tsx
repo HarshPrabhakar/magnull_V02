@@ -694,35 +694,48 @@ function MonitoringOutpost({ seed, center }: { seed: number; center: WorldPoint 
   return <lineSegments geometry={geometry} frustumCulled><lineBasicMaterial color="#5fd8cd" transparent opacity={0.9} /></lineSegments>;
 }
 
-function createMonitoringSphere(radius: number) {
+function createMonitoringDome(radius: number, seed: number, center: WorldPoint) {
   const positions: number[] = [];
-  const latitudeCount = 14;
-  const longitudeCount = 24;
-  const segments = 72;
-  for (let latitude = 1; latitude < latitudeCount; latitude += 1) {
-    const phi = (latitude / latitudeCount) * Math.PI;
-    let previous: XYZ | undefined;
-    for (let step = 0; step <= segments; step += 1) {
-      const theta = (step / segments) * Math.PI * 2;
-      const point: XYZ = [
-        radius * Math.sin(phi) * Math.cos(theta),
-        radius * Math.cos(phi),
-        radius * Math.sin(phi) * Math.sin(theta),
-      ];
-      if (previous) appendSegment(positions, previous, point);
+  const latitudeCount = 9;
+  const meridianCount = 32;
+  const ringSegments = 64;
+  const baseElevation = terrainHeight(center.x, center.z, seed);
+  const domePoint = (radialDistance: number, height: number, angle: number): XYZ => {
+    const x = radialDistance * Math.cos(angle);
+    const z = radialDistance * Math.sin(angle);
+    return [
+      x,
+      terrainHeight(center.x + x, center.z + z, seed) - baseElevation + height + 12,
+      z,
+    ];
+  };
+
+  // Horizontal ground boundary and elevated contour rings. Each sampled ring
+  // follows the terrain height while rising along an upper hemisphere.
+  for (let latitude = 0; latitude < latitudeCount; latitude += 1) {
+    const elevationAngle = (latitude / latitudeCount) * Math.PI / 2;
+    const ringRadius = radius * Math.cos(elevationAngle);
+    const ringHeight = radius * Math.sin(elevationAngle);
+    let previous = domePoint(ringRadius, ringHeight, 0);
+    for (let step = 1; step <= ringSegments; step += 1) {
+      const angle = (step / ringSegments) * Math.PI * 2;
+      const point = domePoint(ringRadius, ringHeight, angle);
+      appendSegment(positions, previous, point);
       previous = point;
     }
   }
-  for (let longitude = 0; longitude < longitudeCount; longitude += 1) {
-    const theta = (longitude / longitudeCount) * Math.PI * 2;
+
+  // Meridian arcs start at the terrain-attached base and converge at the dome apex.
+  for (let meridian = 0; meridian < meridianCount; meridian += 1) {
+    const angle = (meridian / meridianCount) * Math.PI * 2;
     let previous: XYZ | undefined;
-    for (let step = 0; step <= segments; step += 1) {
-      const phi = (step / segments) * Math.PI;
-      const point: XYZ = [
-        radius * Math.sin(phi) * Math.cos(theta),
-        radius * Math.cos(phi),
-        radius * Math.sin(phi) * Math.sin(theta),
-      ];
+    for (let step = 0; step <= latitudeCount * 3; step += 1) {
+      const elevationAngle = (step / (latitudeCount * 3)) * Math.PI / 2;
+      const point = domePoint(
+        radius * Math.cos(elevationAngle),
+        radius * Math.sin(elevationAngle),
+        angle,
+      );
       if (previous) appendSegment(positions, previous, point);
       previous = point;
     }
@@ -731,13 +744,34 @@ function createMonitoringSphere(radius: number) {
 }
 
 function MonitoringZones({ seed, center }: { seed: number; center: WorldPoint }) {
-  const sphereGeometries = useMemo(() => [2_450, 1_650, 850].map(createMonitoringSphere), []);
-  const position: [number, number, number] = [center.x, terrainHeight(center.x, center.z, seed) + 220, center.z];
+  const zones = [
+    { name: "INSPECTION", radius: 2_450, color: "#35c9ef", opacity: 0.56 },
+    { name: "PROXIMITY WARNING", radius: 1_650, color: "#ffbd4a", opacity: 0.7 },
+    { name: "CRITICAL PROXIMITY", radius: 850, color: "#ff5367", opacity: 0.82 },
+  ];
+  const geometries = useMemo(
+    () => zones.map((zone) => createMonitoringDome(zone.radius, seed, center)),
+    [center.x, center.z, seed],
+  );
+  const baseElevation = terrainHeight(center.x, center.z, seed);
   return (
-    <group position={position}>
-      <lineSegments geometry={sphereGeometries[0]} frustumCulled={false} renderOrder={2}><lineBasicMaterial color="#35c9ef" transparent opacity={0.52} depthWrite={false} /></lineSegments>
-      <lineSegments geometry={sphereGeometries[1]} frustumCulled={false} renderOrder={3}><lineBasicMaterial color="#ffbd4a" transparent opacity={0.68} depthWrite={false} /></lineSegments>
-      <lineSegments geometry={sphereGeometries[2]} frustumCulled={false} renderOrder={4}><lineBasicMaterial color="#ff5367" transparent opacity={0.8} depthWrite={false} /></lineSegments>
+    <group position={[center.x, baseElevation, center.z]}>
+      {zones.map((zone, index) => (
+        <group key={zone.name}>
+          <lineSegments geometry={geometries[index]} frustumCulled={false} renderOrder={2 + index}>
+            <lineBasicMaterial color={zone.color} transparent opacity={zone.opacity} depthWrite={false} />
+          </lineSegments>
+          <Html
+            position={[zone.radius * 0.78, terrainHeight(center.x + zone.radius * 0.78, center.z, seed) - baseElevation + 32, 0]}
+            center
+            distanceFactor={7_000}
+          >
+            <span className="world-marker-label" style={{ color: zone.color }}>
+              {zone.name} · {(zone.radius / 1_000).toFixed(2)} KM
+            </span>
+          </Html>
+        </group>
+      ))}
     </group>
   );
 }
