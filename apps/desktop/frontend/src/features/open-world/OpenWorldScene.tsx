@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from "react";
-import { Canvas, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useRef } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { terrainHeight } from "./worldMath";
@@ -93,6 +93,22 @@ function appendSegment(lines: number[], from: XYZ, to: XYZ) {
 function makeLineGeometry(lines: number[]) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(lines, 3));
+  return geometry;
+}
+
+function createRadarSweepGeometry(radius: number, halfAngle: number) {
+  const geometry = new THREE.BufferGeometry();
+  const positions = [0, 0, 0];
+  const indices: number[] = [];
+  const segments = 36;
+  for (let step = 0; step <= segments; step += 1) {
+    const angle = -halfAngle + (2 * halfAngle * step) / segments;
+    positions.push(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
+    if (step > 0) indices.push(0, step, step + 1);
+  }
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   return geometry;
 }
 
@@ -512,6 +528,7 @@ function WorldMarkers({
             gapSize={45}
           />
           <DroneModel flight={flight} />
+          <RadarTargetMarker flight={flight} />
         </>
       )}
     </>
@@ -553,6 +570,150 @@ function DroneModel({ flight }: { flight: FlightState }) {
         <ringGeometry args={[23, 29, 24]} />
         <meshBasicMaterial color="#49dcca" side={THREE.DoubleSide} wireframe />
       </mesh>
+    </group>
+  );
+}
+
+function RadarTargetMarker({ flight }: { flight: FlightState }) {
+  const reticleRef = useRef<THREE.Group>(null);
+  const coreMaterialRef = useRef<THREE.MeshBasicMaterial>(null);
+  const pulseTime = useRef(0);
+
+  useFrame((_, delta) => {
+    if (flight.status !== "active") return;
+    pulseTime.current += Math.min(delta, 0.05);
+    const phase = pulseTime.current * 5.5;
+    reticleRef.current?.scale.setScalar(0.94 + 0.12 * (0.5 + 0.5 * Math.sin(phase)));
+    if (coreMaterialRef.current) {
+      coreMaterialRef.current.opacity = 0.25 + 0.75 * (0.5 + 0.5 * Math.sin(phase * 1.6));
+    }
+  });
+
+  return (
+    <group position={[flight.position.x, flight.position.y, flight.position.z]}>
+      <group ref={reticleRef}>
+        <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, -flight.altitude_m + 8, 0]}>
+          <torusGeometry args={[72, 4, 6, 40]} />
+          <meshBasicMaterial color="#49dcca" transparent opacity={0.8} />
+        </mesh>
+        <mesh>
+          <torusGeometry args={[48, 3, 6, 32]} />
+          <meshBasicMaterial color="#8fffee" transparent opacity={0.72} />
+        </mesh>
+        <mesh>
+          <sphereGeometry args={[15, 12, 8]} />
+          <meshBasicMaterial ref={coreMaterialRef} color="#bafff4" transparent opacity={0.9} />
+        </mesh>
+      </group>
+      <Line
+        points={[[0, -flight.altitude_m + 8, 0], [0, -flight.altitude_m + 92, 0]]}
+        color="#49dcca"
+        lineWidth={1.4}
+        transparent
+        opacity={0.8}
+      />
+    </group>
+  );
+}
+
+function RadarInstallation({ seed, flight }: { seed: number; flight: FlightState | null }) {
+  const scannerRef = useRef<THREE.Group>(null);
+  const lastSimTimeRef = useRef(flight?.sim_time ?? 0);
+  const displayTimeRef = useRef(flight?.sim_time ?? 0);
+  const sweepGeometry = useMemo(() => createRadarSweepGeometry(1_650, Math.PI / 10), []);
+  const [site] = useMemo(() => seededPositions(seed + 913, 1, 520), [seed]);
+  const position = {
+    x: 4_280 + Math.abs(site.x),
+    z: -4_280 - Math.abs(site.z),
+  };
+  const ground = terrainHeight(position.x, position.z, seed);
+  const tracking = flight?.status === "active" && Boolean(flight.drone_id);
+  const label = flight?.status === "paused"
+    ? "RADAR · PAUSED"
+    : tracking
+      ? `RADAR · TRACKING ${flight?.drone_id}`
+      : flight?.status === "active"
+        ? "RADAR · SCANNING"
+        : "RADAR · STANDBY";
+  const labelColor = tracking ? "#49dcca" : flight?.status === "paused" ? "#ffbd4a" : "#8ba3ad";
+
+  useFrame((_, delta) => {
+    if (flight?.status !== "active" || !scannerRef.current) return;
+    if (flight.sim_time !== lastSimTimeRef.current) {
+      lastSimTimeRef.current = flight.sim_time;
+      displayTimeRef.current = flight.sim_time;
+    } else {
+      displayTimeRef.current += Math.min(delta, 0.05);
+    }
+
+    if (tracking && flight) {
+      const dx = flight.position.x - position.x;
+      const dz = flight.position.z - position.z;
+      const targetYaw = Math.atan2(dx, dz);
+      const currentYaw = scannerRef.current.rotation.y;
+      const difference = Math.atan2(Math.sin(targetYaw - currentYaw), Math.cos(targetYaw - currentYaw));
+      scannerRef.current.rotation.y = currentYaw + difference * (1 - Math.exp(-4.5 * delta));
+    } else {
+      scannerRef.current.rotation.y = (displayTimeRef.current * Math.PI / 2) % (Math.PI * 2);
+    }
+  });
+
+  return (
+    <group position={[position.x, ground, position.z]}>
+      <mesh position={[0, 22, 0]}>
+        <boxGeometry args={[260, 44, 240]} />
+        <meshBasicMaterial color="#58cfc6" wireframe />
+      </mesh>
+      <mesh position={[0, 165, 0]}>
+        <cylinderGeometry args={[68, 98, 250, 6, 3]} />
+        <meshBasicMaterial color="#4fbdb5" wireframe />
+      </mesh>
+      <Line points={[[-110, 48, -100], [-50, 280, -45], [0, 330, 0], [50, 280, 45], [110, 48, 100]]} color="#4fbdb5" lineWidth={1.5} />
+      <Line points={[[110, 48, -100], [50, 280, -45], [0, 330, 0], [-50, 280, 45], [-110, 48, 100]]} color="#4fbdb5" lineWidth={1.5} />
+      <group ref={scannerRef}>
+        <mesh geometry={sweepGeometry} position={[0, 18, 0]} frustumCulled={false}>
+          <meshBasicMaterial color="#49dcca" transparent opacity={0.085} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+        <Line points={[[0, 22, 0], [0, 22, 1_650]]} color="#49dcca" lineWidth={2} transparent opacity={0.9} />
+        <group position={[0, 350, 0]}>
+          <Line points={[[0, -15, 0], [0, 10, 95], [0, 32, 145]]} color="#79e7dc" lineWidth={2} />
+          <mesh position={[0, 32, 145]}>
+            <circleGeometry args={[86, 32]} />
+            <meshBasicMaterial color="#63d9ce" wireframe side={THREE.DoubleSide} />
+          </mesh>
+          <mesh position={[0, 32, 145]}>
+            <torusGeometry args={[86, 4, 6, 32]} />
+            <meshBasicMaterial color="#8fffee" wireframe />
+          </mesh>
+          {[0, 1, 2, 3, 4, 5, 6, 7].map((spoke) => {
+            const angle = spoke * Math.PI / 4;
+            return (
+              <Line
+                key={spoke}
+                points={[[0, 32, 145], [Math.cos(angle) * 86, 32 + Math.sin(angle) * 86, 145]]}
+                color="#63d9ce"
+                lineWidth={1}
+              />
+            );
+          })}
+          <Line points={[[-160, 0, 110], [0, 12, 0], [160, 0, 110]]} color="#58cfc6" lineWidth={2} />
+        </group>
+      </group>
+      {tracking && flight && (
+        <Line
+          points={[[0, 25, 0], [flight.position.x - position.x, flight.position.y - ground, flight.position.z - position.z]]}
+          color="#49dcca"
+          lineWidth={1}
+          transparent
+          opacity={0.58}
+          dashed
+          dashSize={90}
+          gapSize={60}
+        />
+      )}
+      <Html position={[0, 555, 0]} center distanceFactor={6_500}>
+        <span className="world-marker-label" style={{ color: labelColor }}>{label}</span>
+      </Html>
     </group>
   );
 }
@@ -830,7 +991,7 @@ export function OpenWorldScene({
     <Canvas
       camera={{ position: [cameraTarget[0] + 6_500, cameraTarget[1] + 6_500, cameraTarget[2] + 6_500], fov: 42, near: 10, far: 30_000 }}
       dpr={[1, 1.5]}
-      frameloop="demand"
+      frameloop={flight?.status === "active" ? "always" : "demand"}
       gl={{ antialias: true, powerPreference: "low-power", alpha: false }}
       className="open-world-canvas"
     >
@@ -879,6 +1040,7 @@ export function OpenWorldScene({
         </>
       )}
       {settings.forestVisible && <Forest seed={seed} center={destinationPoint} />}
+      <RadarInstallation seed={seed} flight={flight} />
       <MonitoringZones seed={seed} center={destinationPoint} />
       <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} />
 
