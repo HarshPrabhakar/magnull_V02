@@ -23,6 +23,17 @@ def test_same_seed_and_config_create_same_spawn_and_scenario():
     assert first["config_hash"] == second["config_hash"]
 
 
+def test_spawn_variant_is_deterministic_and_changes_only_spawn():
+    first = OpenWorldSimulation().start(FlightConfig(seed=123, spawn_seed=7))
+    repeated = OpenWorldSimulation().start(FlightConfig(seed=123, spawn_seed=7))
+    alternate = OpenWorldSimulation().start(FlightConfig(seed=123, spawn_seed=8))
+
+    assert first["spawn"] == repeated["spawn"]
+    assert first["spawn"] != alternate["spawn"]
+    assert first["seed"] == alternate["seed"]
+    assert first["config_hash"] != alternate["config_hash"]
+
+
 def test_pause_freezes_state_and_resume_continues(monkeypatch):
     now = [100.0]
     monkeypatch.setattr("simulation.open_world.monotonic", lambda: now[0])
@@ -150,6 +161,8 @@ def test_open_world_api_rejects_invalid_and_out_of_order_actions(monkeypatch):
 
     with pytest.raises(ValidationError):
         backend_main.FlightStartRequest(seed=-1)
+    with pytest.raises(ValidationError):
+        backend_main.FlightStartRequest(seed=42, spawn_seed=2_147_483_648)
     with pytest.raises(HTTPException) as invalid_action:
         backend_main.control_open_world("pause")
     assert invalid_action.value.status_code == 409
