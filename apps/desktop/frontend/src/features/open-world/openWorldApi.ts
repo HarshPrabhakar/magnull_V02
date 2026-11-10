@@ -195,6 +195,7 @@ async function request(path: string, method = "GET", body?: unknown): Promise<Fl
 export const fetchFlightState = () => request("state");
 export const startFlight = (config: {
   seed: number;
+  spawn_seed: number;
   spawn_distance_m: number;
   initial_altitude_m: number;
   max_speed_mps: number;
