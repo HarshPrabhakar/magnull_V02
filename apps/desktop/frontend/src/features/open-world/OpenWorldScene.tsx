@@ -20,8 +20,9 @@ export type SceneSettings = {
   visibilityMeters: number;
 };
 export type CameraCommand = {
-  view: "overview" | "top-down";
+  view: "overview" | "top-down" | "follow-drone";
   revision: number;
+  target?: { x: number; y: number; z: number };
 };
 
 const WORLD_SIZE_METERS = 12_000;
@@ -1014,19 +1015,14 @@ function createMonitoringDome(radius: number, seed: number, center: WorldPoint) 
 }
 
 function MonitoringZones({ seed, center }: { seed: number; center: WorldPoint }) {
-  const zones = [
-    { name: "INSPECTION", radius: 2_450, color: "#35c9ef", opacity: 0.56 },
-    { name: "PROXIMITY WARNING", radius: 1_650, color: "#ffbd4a", opacity: 0.7 },
-    { name: "CRITICAL PROXIMITY", radius: 850, color: "#ff5367", opacity: 0.82 },
-  ];
   const geometries = useMemo(
-    () => zones.map((zone) => createMonitoringDome(zone.radius, seed, center)),
-    [center.x, center.z, seed],
+    () => MONITORING_ZONES.map((zone) => createMonitoringDome(zone.radius, seed, center)),
+    [center, seed],
   );
   const baseElevation = terrainHeight(center.x, center.z, seed);
   return (
     <group position={[center.x, baseElevation, center.z]}>
-      {zones.map((zone, index) => (
+      {MONITORING_ZONES.map((zone, index) => (
         <group key={zone.name}>
           <lineSegments geometry={geometries[index]} frustumCulled={false} renderOrder={2 + index}>
             <lineBasicMaterial color={zone.color} transparent opacity={zone.opacity} depthWrite={false} />
@@ -1046,18 +1042,35 @@ function MonitoringZones({ seed, center }: { seed: number; center: WorldPoint })
   );
 }
 
-function CameraRig({ command, seed }: { command: CameraCommand; seed: number }) {
+const MONITORING_ZONES = [
+  { name: "INSPECTION", radius: 2_450, color: "#35c9ef", opacity: 0.56 },
+  { name: "PROXIMITY WARNING", radius: 1_650, color: "#ffbd4a", opacity: 0.7 },
+  { name: "CRITICAL PROXIMITY", radius: 850, color: "#ff5367", opacity: 0.82 },
+];
+
+function CameraRig({ command, seed, flight }: { command: CameraCommand; seed: number; flight: FlightState | null }) {
   const { camera, controls } = useThree();
+  const followTarget = useRef<THREE.Vector3 | null>(null);
+  const droneTarget = useMemo(() => new THREE.Vector3(), []);
+  const followDelta = useMemo(() => new THREE.Vector3(), []);
 
   useEffect(() => {
     if (command.revision === 0) return;
-    const target = new THREE.Vector3(0, terrainHeight(0, 0, seed) + 180, 0);
+    const target = command.view === "follow-drone" && command.target
+      ? new THREE.Vector3(command.target.x, command.target.y, command.target.z)
+      : new THREE.Vector3(0, terrainHeight(0, 0, seed) + 180, 0);
     if (command.view === "top-down") {
       camera.position.set(target.x, target.y + 12_000, target.z + 0.1);
       camera.up.set(0, 0, -1);
+      followTarget.current = null;
+    } else if (command.view === "follow-drone" && command.target) {
+      camera.position.set(target.x + 2_100, target.y + 1_250, target.z + 2_100);
+      camera.up.set(0, 1, 0);
+      followTarget.current = target.clone();
     } else {
       camera.position.set(target.x + 6_500, target.y + 6_500, target.z + 6_500);
       camera.up.set(0, 1, 0);
+      followTarget.current = null;
     }
     camera.lookAt(target);
     camera.updateProjectionMatrix();
@@ -1070,6 +1083,20 @@ function CameraRig({ command, seed }: { command: CameraCommand; seed: number }) 
       orbit.update();
     }
   }, [camera, command, controls, seed]);
+
+  useFrame((_, delta) => {
+    if (command.view !== "follow-drone" || !flight?.drone_id || !followTarget.current) return;
+    droneTarget.set(flight.position.x, flight.position.y + 80, flight.position.z);
+    followDelta.subVectors(droneTarget, followTarget.current)
+      .multiplyScalar(1 - Math.exp(-5 * Math.min(delta, 0.05)));
+    camera.position.add(followDelta);
+    const orbit = controls as unknown as { target: THREE.Vector3; update: () => void } | null;
+    if (orbit) {
+      orbit.target.add(followDelta);
+      orbit.update();
+    }
+    followTarget.current.add(followDelta);
+  });
 
   return null;
 }
@@ -1176,7 +1203,7 @@ export function OpenWorldScene({
           maxPolarAngle={Math.PI * 0.49}
           target={cameraTarget}
         />
-        <CameraRig command={cameraCommand} seed={seed} />
+        <CameraRig command={cameraCommand} seed={seed} flight={flight} />
       </Canvas>
       <RadarScopeOverlay flight={flight} proximity={proximity} refs={radarScopeRefs} />
     </div>
