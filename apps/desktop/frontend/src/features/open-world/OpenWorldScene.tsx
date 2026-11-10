@@ -3,7 +3,7 @@ import type { RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { terrainHeight } from "./worldMath";
+import { seededSpawnPoint, terrainHeight } from "./worldMath";
 import type { FlightState } from "./openWorldApi";
 import { formatProximityEta, proximityColor, type ProximityState } from "./openWorldProximity";
 
@@ -465,17 +465,22 @@ function Forest({ seed, center }: { seed: number; center: WorldPoint }) {
 function WorldMarkers({
   seed,
   destinationPoint,
+  spawnSeed,
+  spawnDistance,
   flight,
   proximity,
 }: {
   seed: number;
   destinationPoint: WorldPoint;
+  spawnSeed: number;
+  spawnDistance: number;
   flight: FlightState | null;
   proximity: ProximityState;
 }) {
-  const spawn = flight
+  const previewSpawn = seededSpawnPoint(seed, spawnSeed, spawnDistance, destinationPoint);
+  const spawn = flight?.drone_id
     ? new THREE.Vector3(flight.spawn.x, terrainHeight(flight.spawn.x, flight.spawn.z, seed), flight.spawn.z)
-    : new THREE.Vector3(-3_200, terrainHeight(-3_200, -700, seed), -700);
+    : new THREE.Vector3(previewSpawn.x, terrainHeight(previewSpawn.x, previewSpawn.z, seed), previewSpawn.z);
   const destination = new THREE.Vector3(
     destinationPoint.x,
     terrainHeight(destinationPoint.x, destinationPoint.z, seed),
@@ -489,7 +494,7 @@ function WorldMarkers({
         <meshBasicMaterial color="#ff5873" wireframe />
       </mesh>
       <Html position={[spawn.x, spawn.y + 150, spawn.z]} center distanceFactor={7_000}>
-        <span className="world-marker-label spawn-label">{flight ? "DRONE SPAWN" : "SPAWN AREA"}</span>
+        <span className="world-marker-label spawn-label">{flight?.drone_id ? "DRONE SPAWN" : "SPAWN AREA"}</span>
       </Html>
       <mesh position={[destination.x, destination.y + 10, destination.z]}>
         <torusGeometry args={[115, 9, 8, 48]} />
@@ -1075,6 +1080,8 @@ export function OpenWorldScene({
   cameraCommand,
   settings,
   destinationPoint,
+  spawnSeed,
+  spawnDistance,
   flight,
   proximity,
   onTerrainClick,
@@ -1084,6 +1091,8 @@ export function OpenWorldScene({
   cameraCommand: CameraCommand;
   settings: SceneSettings;
   destinationPoint: WorldPoint;
+  spawnSeed: number;
+  spawnDistance: number;
   flight: FlightState | null;
   proximity: ProximityState;
   onTerrainClick: (point: WorldPoint) => void;
@@ -1156,7 +1165,7 @@ export function OpenWorldScene({
         {settings.forestVisible && <Forest seed={seed} center={destinationPoint} />}
         <RadarScopeController seed={seed} flight={flight} refs={radarScopeRefs} />
         <MonitoringZones seed={seed} center={destinationPoint} />
-        <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} proximity={proximity} />
+        <WorldMarkers seed={seed} destinationPoint={destinationPoint} spawnSeed={spawnSeed} spawnDistance={spawnDistance} flight={flight} proximity={proximity} />
 
         <OrbitControls
           makeDefault
