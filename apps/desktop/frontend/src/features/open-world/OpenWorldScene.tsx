@@ -5,6 +5,7 @@ import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { terrainHeight } from "./worldMath";
 import type { FlightState } from "./openWorldApi";
+import { formatProximityEta, proximityColor, type ProximityState } from "./openWorldProximity";
 
 export type EnvironmentMode = "technical" | "realistic";
 export type WorldPoint = { x: number; z: number };
@@ -465,10 +466,12 @@ function WorldMarkers({
   seed,
   destinationPoint,
   flight,
+  proximity,
 }: {
   seed: number;
   destinationPoint: WorldPoint;
   flight: FlightState | null;
+  proximity: ProximityState;
 }) {
   const spawn = flight
     ? new THREE.Vector3(flight.spawn.x, terrainHeight(flight.spawn.x, flight.spawn.z, seed), flight.spawn.z)
@@ -520,16 +523,17 @@ function WorldMarkers({
             dashSize={75}
             gapSize={45}
           />
-          <DroneModel flight={flight} />
-          <RadarTargetMarker flight={flight} />
+          <DroneModel flight={flight} proximity={proximity} />
+          <RadarTargetMarker flight={flight} proximity={proximity} />
         </>
       )}
     </>
   );
 }
 
-function DroneModel({ flight }: { flight: FlightState }) {
+function DroneModel({ flight, proximity }: { flight: FlightState; proximity: ProximityState }) {
   const { x, y, z } = flight.position;
+  const zoneColor = proximityColor(proximity.zone);
   return (
     <group position={[x, y, z]} rotation={[0, -flight.heading_deg * Math.PI / 180, 0]}>
       <mesh>
@@ -557,7 +561,12 @@ function DroneModel({ flight }: { flight: FlightState }) {
         </group>
       ))) }
       <Html position={[0, 70, 0]} center distanceFactor={6_000}>
-        <span className="world-marker-label drone-label">{flight.drone_id} · {flight.status === "complete" ? "LANDED" : flight.status.toUpperCase()}</span>
+        <span style={{ display: "block", minWidth: 150, padding: "5px 7px", color: "#b5d2ce", background: "rgba(2, 12, 18, .9)", border: `1px solid ${zoneColor}`, font: "8px/1.5 Consolas, monospace", letterSpacing: ".35px", whiteSpace: "nowrap" }}>
+          <b style={{ color: zoneColor }}>{flight.drone_id} · {flight.status === "complete" ? "LANDED" : flight.status.toUpperCase()}</b><br />
+          PROFILE: {flight.rf_profile.replaceAll("_", "-").toUpperCase()} · SIMULATED<br />
+          ZONE: <b style={{ color: zoneColor }}>{proximity.label}</b><br />
+          {proximity.nextBoundary ? `EST. TO ${proximity.nextBoundary}: ${formatProximityEta(proximity.etaSeconds)}` : "INSIDE CRITICAL ZONE"}
+        </span>
       </Html>
       <mesh position={[0, -flight.altitude_m + 5, 0]}>
         <ringGeometry args={[23, 29, 24]} />
@@ -567,10 +576,11 @@ function DroneModel({ flight }: { flight: FlightState }) {
   );
 }
 
-function RadarTargetMarker({ flight }: { flight: FlightState }) {
+function RadarTargetMarker({ flight, proximity }: { flight: FlightState; proximity: ProximityState }) {
   const reticleRef = useRef<THREE.Group>(null);
   const coreMaterialRef = useRef<THREE.MeshBasicMaterial>(null);
   const pulseTime = useRef(0);
+  const zoneColor = proximityColor(proximity.zone);
 
   useFrame((_, delta) => {
     if (flight.status !== "active") return;
@@ -587,20 +597,20 @@ function RadarTargetMarker({ flight }: { flight: FlightState }) {
       <group ref={reticleRef}>
         <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, -flight.altitude_m + 8, 0]}>
           <torusGeometry args={[72, 4, 6, 40]} />
-          <meshBasicMaterial color="#49dcca" transparent opacity={0.8} />
+          <meshBasicMaterial color={zoneColor} transparent opacity={0.8} />
         </mesh>
         <mesh>
           <torusGeometry args={[48, 3, 6, 32]} />
-          <meshBasicMaterial color="#8fffee" transparent opacity={0.72} />
+          <meshBasicMaterial color={zoneColor} transparent opacity={0.72} />
         </mesh>
         <mesh>
           <sphereGeometry args={[15, 12, 8]} />
-          <meshBasicMaterial ref={coreMaterialRef} color="#bafff4" transparent opacity={0.9} />
+          <meshBasicMaterial ref={coreMaterialRef} color={zoneColor} transparent opacity={0.9} />
         </mesh>
       </group>
       <Line
         points={[[0, -flight.altitude_m + 8, 0], [0, -flight.altitude_m + 92, 0]]}
-        color="#49dcca"
+        color={zoneColor}
         lineWidth={1.4}
         transparent
         opacity={0.8}
@@ -708,13 +718,14 @@ function RadarScopeController({
   return null;
 }
 
-function RadarScopeOverlay({ flight, refs }: { flight: FlightState | null; refs: RadarScopeRefs }) {
+function RadarScopeOverlay({ flight, proximity, refs }: { flight: FlightState | null; proximity: ProximityState; refs: RadarScopeRefs }) {
   const linked = Boolean(flight?.drone_id);
   const status = flight?.status === "active"
     ? linked ? "TRACK LOCK" : "SWEEPING"
     : flight?.status === "paused" ? "PAUSED" : "STANDBY";
   const statusColor = flight?.status === "active" ? "#75e8cf" : flight?.status === "paused" ? "#ffc45b" : "#8199a3";
   const targetProfile = flight?.rf_profile.replaceAll("_", "-").toUpperCase() ?? "NO TARGET";
+  const targetColor = proximityColor(proximity.zone);
 
   const degrees = Array.from({ length: 12 }, (_, index) => index * 30);
   const polar = (radius: number, angle: number) => ({
@@ -795,11 +806,11 @@ function RadarScopeOverlay({ flight, refs }: { flight: FlightState | null; refs:
           </g>
           <polyline ref={refs.trail} points="" fill="none" stroke="#dbc476" strokeWidth="1" strokeDasharray="2 4" visibility="hidden" />
           <g ref={refs.target} visibility={linked ? "visible" : "hidden"}>
-            <circle r="8" fill="none" stroke="#64f3df" strokeWidth="1.1" />
-            <circle r="3" fill="#aafff2" />
-            <path d="M -12 0 H -5 M 5 0 H 12 M 0 -12 V -5 M 0 5 V 12" stroke="#72ffe9" strokeWidth="0.8" />
+            <circle r="8" fill="none" stroke={targetColor} strokeWidth="1.1" />
+            <circle r="3" fill={targetColor} />
+            <path d="M -12 0 H -5 M 5 0 H 12 M 0 -12 V -5 M 0 5 V 12" stroke={targetColor} strokeWidth="0.8" />
           </g>
-          <text ref={refs.targetLabel} x="0" y="0" fill="#aafff2" fontSize="6.5" visibility="hidden">{flight?.drone_id ?? ""}</text>
+          <text ref={refs.targetLabel} x="0" y="0" fill={targetColor} fontSize="6.5" visibility="hidden">{flight?.drone_id ?? ""}</text>
           <text x="2" y="324" fill="#8fded5" fontSize="6.8">{linked ? `${flight?.drone_id} · ${targetProfile} (SIMULATED)` : "NO ACTIVE SIMULATED TARGET"}</text>
           <text ref={refs.bearing} x="318" y="324" fill="#b6d8d3" fontSize="6.8" textAnchor="end">BEARING: — · RANGE: —</text>
           <path d="M 0 334 H 320" stroke="#28615e" strokeWidth="1" />
@@ -1065,6 +1076,7 @@ export function OpenWorldScene({
   settings,
   destinationPoint,
   flight,
+  proximity,
   onTerrainClick,
 }: {
   seed: number;
@@ -1073,6 +1085,7 @@ export function OpenWorldScene({
   settings: SceneSettings;
   destinationPoint: WorldPoint;
   flight: FlightState | null;
+  proximity: ProximityState;
   onTerrainClick: (point: WorldPoint) => void;
 }) {
   const radarScopeRefs: RadarScopeRefs = {
@@ -1143,7 +1156,7 @@ export function OpenWorldScene({
         {settings.forestVisible && <Forest seed={seed} center={destinationPoint} />}
         <RadarScopeController seed={seed} flight={flight} refs={radarScopeRefs} />
         <MonitoringZones seed={seed} center={destinationPoint} />
-        <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} />
+        <WorldMarkers seed={seed} destinationPoint={destinationPoint} flight={flight} proximity={proximity} />
 
         <OrbitControls
           makeDefault
@@ -1156,7 +1169,7 @@ export function OpenWorldScene({
         />
         <CameraRig command={cameraCommand} seed={seed} />
       </Canvas>
-      <RadarScopeOverlay flight={flight} refs={radarScopeRefs} />
+      <RadarScopeOverlay flight={flight} proximity={proximity} refs={radarScopeRefs} />
     </div>
   );
 }
