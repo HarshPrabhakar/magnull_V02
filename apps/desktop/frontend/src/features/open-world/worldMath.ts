@@ -23,3 +23,12 @@ export function terrainHeight(x: number, z: number, seed: number): number {
 
   return 150 + ridge * 200 + hills * 125 + valley * 70 + mountains;
 }
+
+export function seededSpawnPoint(seed: number, spawnSeed: number, distance: number, destination: { x: number; z: number }) {
+  let angleSeed = (seed ^ spawnSeed ^ 0x5EED1234) >>> 0;
+  angleSeed = (Math.imul(angleSeed, 1_664_525) + 1_013_904_223) >>> 0;
+  const angle = angleSeed / 0x1_0000_0000 * Math.PI * 2;
+  const x = Math.max(-6_000, Math.min(6_000, destination.x + Math.cos(angle) * distance));
+  const z = Math.max(-6_000, Math.min(6_000, destination.z + Math.sin(angle) * distance));
+  return { x, z };
+}
