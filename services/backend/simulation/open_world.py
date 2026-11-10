@@ -38,6 +38,7 @@ def terrain_height(x: float, z: float, seed: int) -> float:
 @dataclass
 class FlightConfig:
     seed: int = 42
+    spawn_seed: int = 0
     spawn_distance_m: float = 5_000
     initial_altitude_m: float = 120
     max_speed_mps: float = 18
@@ -73,6 +74,8 @@ class OpenWorldSimulation:
             raise ValueError("A scenario is already active; stop or reset it first")
         if not 100 <= config.spawn_distance_m <= 10_000:
             raise ValueError("spawn_distance_m must be between 100 and 10000")
+        if not 0 <= config.spawn_seed <= 2_147_483_647:
+            raise ValueError("spawn_seed must be between 0 and 2147483647")
         if not 20 <= config.initial_altitude_m <= 500:
             raise ValueError("initial_altitude_m must be between 20 and 500")
         if not 1 <= config.max_speed_mps <= 60:
@@ -89,14 +92,14 @@ class OpenWorldSimulation:
 
         self.config = config
         canonical = (
-            f"{SIM_VERSION}:{config.seed}:{config.spawn_distance_m}:{config.initial_altitude_m}:"
+            f"{SIM_VERSION}:{config.seed}:{config.spawn_seed}:{config.spawn_distance_m}:{config.initial_altitude_m}:"
             f"{config.max_speed_mps}:{config.wind_speed_mps}:"
             f"{config.destination_x_m}:{config.destination_z_m}:"
             f"{config.rf_profile}:{config.interference_db}"
         )
         self._config_hash = hashlib.sha256(canonical.encode()).hexdigest()
         # Separate deterministic spawn generation: same config yields same spawn.
-        angle_seed = (config.seed ^ 0x5EED1234) & 0xFFFFFFFF
+        angle_seed = (config.seed ^ config.spawn_seed ^ 0x5EED1234) & 0xFFFFFFFF
         angle_seed = (angle_seed * 1664525 + 1013904223) & 0xFFFFFFFF
         angle = angle_seed / 0x1_0000_0000 * math.tau
         sx = config.destination_x_m + math.cos(angle) * config.spawn_distance_m
