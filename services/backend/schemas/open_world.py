@@ -8,6 +8,7 @@ class FlightStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     seed: int = Field(ge=0, le=2_147_483_647)
+    spawn_seed: int = Field(default=0, ge=0, le=2_147_483_647)
     spawn_distance_m: float = Field(ge=100, le=10_000)
     initial_altitude_m: float = Field(ge=20, le=500)
     max_speed_mps: float = Field(ge=1, le=60)
