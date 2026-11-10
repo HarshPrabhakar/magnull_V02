@@ -170,6 +170,7 @@ export default function OpenWorldPage() {
   const [rfProfile, setRFProfile] = useState<RFProfileId>("generic_fhss");
   const [interferenceDb, setInterferenceDb] = useState(0);
   const [spawnDistance, setSpawnDistance] = useState(5_000);
+  const [spawnSeed, setSpawnSeed] = useState(0);
   const [initialAltitude, setInitialAltitude] = useState(120);
   const [maxSpeed, setMaxSpeed] = useState(18);
   const [flight, setFlight] = useState<FlightState | null>(null);
@@ -262,7 +263,7 @@ export default function OpenWorldPage() {
     setSimulationError("");
     try {
       const next = action === "start"
-        ? await startFlight({ seed, spawn_distance_m: spawnDistance, initial_altitude_m: initialAltitude, max_speed_mps: maxSpeed, wind_speed_mps: windSpeed, destination_x_m: destination.x, destination_z_m: destination.z, rf_profile: rfProfile, interference_db: interferenceDb })
+        ? await startFlight({ seed, spawn_seed: spawnSeed, spawn_distance_m: spawnDistance, initial_altitude_m: initialAltitude, max_speed_mps: maxSpeed, wind_speed_mps: windSpeed, destination_x_m: destination.x, destination_z_m: destination.z, rf_profile: rfProfile, interference_db: interferenceDb })
         : await controlFlight(action);
       const snapshot = await fetchOpenWorldSnapshot();
       acceptFlightState(snapshot.flight, action === "reset" || action === "start");
@@ -399,8 +400,19 @@ export default function OpenWorldPage() {
     }
   };
 
-  const generateEnvironment = () => {
+  const generateEnvironment = async () => {
     if (flightLocked) return;
+    if (scenarioConfigured) {
+      try {
+        const reset = await controlFlight("reset");
+        acceptFlightState(reset, true);
+        setRFState(null);
+        setServiceAvailable(true);
+      } catch (error) {
+        setSimulationError(error instanceof Error ? error.message : "Could not reset the previous scenario");
+        return;
+      }
+    }
     const randomSeed = new Uint32Array(1);
     window.crypto.getRandomValues(randomSeed);
     const nextSeed = randomSeed[0] % 2_147_483_648;
@@ -408,6 +420,15 @@ export default function OpenWorldPage() {
     setSeedText(String(nextSeed));
     setInspectedPoint(null);
     recordWorldEvent(`New terrain generated from seed ${nextSeed}`);
+  };
+
+  const randomizeSpawn = () => {
+    if (scenarioConfigured) return;
+    const randomValue = new Uint32Array(1);
+    window.crypto.getRandomValues(randomValue);
+    const nextSpawnSeed = randomValue[0] % 2_147_483_648;
+    setSpawnSeed(nextSpawnSeed);
+    recordWorldEvent(`Spawn preview randomized · variant ${nextSpawnSeed}`);
   };
 
   const setCameraView = (view: CameraCommand["view"]) => {
@@ -452,7 +473,7 @@ export default function OpenWorldPage() {
           <span className={`open-world-status-item ${flight?.status === "active" ? "active" : ""}`}><i /> SIMULATION: {flight?.status?.toUpperCase() ?? "STANDBY"}</span>
           <span className="open-world-status-item"><i /> WORLD: READY</span>
           <span className={`open-world-status-item ${flight?.drone_id ? "active" : "muted"}`}><i /> DRONE: {flight?.drone_id ? flight.status === "complete" ? "LANDED" : flight.status === "stopped" ? "STOPPED" : "AIRBORNE" : "NOT SPAWNED"}</span>
-          <span className="open-world-status-item muted"><i /> RF: IDLE · PHASE 5</span>
+          <span className={`open-world-status-item ${activeRF ? "active" : "muted"}`}><i /> RF: {activeRF?.status?.toUpperCase() ?? "IDLE"}</span>
         </div>
       </header>
 
@@ -479,6 +500,10 @@ export default function OpenWorldPage() {
             <span>Spawn distance <strong>{(spawnDistance / 1_000).toFixed(1)} km</strong></span>
             <input type="range" min={500} max={10_000} step={500} value={spawnDistance} disabled={scenarioConfigured} onChange={(event) => setSpawnDistance(Number(event.target.value))} />
           </label>
+          <div className="open-world-spawn-variant">
+            <span>SPAWN VARIANT <strong>{spawnSeed}</strong></span>
+            <button type="button" disabled={scenarioConfigured} onClick={randomizeSpawn}>RANDOMIZE SPAWN</button>
+          </div>
           <label className="open-world-field">
             <span>Initial altitude <strong>{initialAltitude} m AGL</strong></span>
             <input type="range" min={20} max={500} step={10} value={initialAltitude} disabled={scenarioConfigured} onChange={(event) => setInitialAltitude(Number(event.target.value))} />
@@ -589,7 +614,7 @@ export default function OpenWorldPage() {
           </div>
           <p className="open-world-hint">{simulationError || (serviceAvailable ? "Flight motion is provided by the local simulation backend." : "Waiting for simulation backend at 127.0.0.1:8765.")}</p>
 
-          <button className="open-world-secondary-action open-world-generate-action" type="button" disabled={scenarioConfigured} onClick={generateEnvironment}>
+          <button className="open-world-secondary-action open-world-generate-action" type="button" disabled={flightLocked} onClick={() => void generateEnvironment()}>
             GENERATE NEW ENVIRONMENT
           </button>
           <div className="open-world-provenance">SIMULATED DATA · UNCLASSIFIED · DEMONSTRATION SYSTEM</div>
@@ -607,6 +632,8 @@ export default function OpenWorldPage() {
               cameraCommand={cameraCommand}
               settings={sceneSettings}
               destinationPoint={destination}
+              spawnSeed={spawnSeed}
+              spawnDistance={spawnDistance}
               flight={flight}
               proximity={proximity}
               onTerrainClick={handleTerrainClick}
