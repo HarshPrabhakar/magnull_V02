@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   OpenWorldScene,
   type CameraCommand,
@@ -7,6 +7,7 @@ import {
   type WorldPoint,
 } from "./OpenWorldScene";
 import { terrainHeight } from "./worldMath";
+import { estimateProximity, formatProximityEta, OUTSIDE_PROXIMITY, type ProximityZone } from "./openWorldProximity";
 import { controlFlight, fetchOpenWorldSnapshot, startFlight, type FlightState, type FlightTelemetry, type OpenWorldRFState, type RFEvent, type RFProfileId } from "./openWorldApi";
 
 const INITIAL_SEED = 42;
@@ -183,6 +184,8 @@ export default function OpenWorldPage() {
     `World generated from seed ${INITIAL_SEED}`,
     "Idle: no flight or RF events have been generated",
   ]);
+  const [proximity, setProximity] = useState(OUTSIDE_PROXIMITY);
+  const lastProximity = useRef<{ scenarioId: string; zone: ProximityZone } | null>(null);
 
   const acceptFlightState = useCallback((state: FlightState, resetHistory = false) => {
     setFlight(state);
@@ -276,6 +279,28 @@ export default function OpenWorldPage() {
   const recordWorldEvent = useCallback((message: string) => {
     setWorldEvents((previous) => [message, ...previous].slice(0, 12));
   }, []);
+
+  useEffect(() => {
+    if (!flight?.scenario_id || !flight.drone_id) {
+      lastProximity.current = null;
+      setProximity(OUTSIDE_PROXIMITY);
+      return;
+    }
+
+    const sameScenario = lastProximity.current?.scenarioId === flight.scenario_id;
+    const previousZone = sameScenario ? lastProximity.current!.zone : "outside";
+    const next = estimateProximity(flight, destination, previousZone);
+    setProximity(next);
+    if (sameScenario && next.zone !== previousZone) {
+      const event = next.zone === "outside"
+        ? `${flight.drone_id} exited the monitoring zones`
+        : `${flight.drone_id} entered ${next.label.toLowerCase()} zone`;
+      recordWorldEvent(`PROXIMITY · ${event}`);
+    } else if (!sameScenario && next.zone !== "outside") {
+      recordWorldEvent(`PROXIMITY · ${flight.drone_id} spawned in ${next.label.toLowerCase()} zone`);
+    }
+    lastProximity.current = { scenarioId: flight.scenario_id, zone: next.zone };
+  }, [destination, flight, recordWorldEvent]);
 
   const updateSeed = (text: string) => {
     setSeedText(text);
@@ -498,6 +523,7 @@ export default function OpenWorldPage() {
               settings={sceneSettings}
               destinationPoint={destination}
               flight={flight}
+              proximity={proximity}
               onTerrainClick={handleTerrainClick}
             />
             {destinationPicking && <div className="open-world-pick-hint">CLICK A TERRAIN POINT TO MOVE SAFE ZONE-01</div>}
@@ -524,6 +550,8 @@ export default function OpenWorldPage() {
             <MetricRow label="VERTICAL SPEED" value={flight?.drone_id ? `${flight.vertical_speed_mps.toFixed(2)} m/s` : "— m/s"} />
             <MetricRow label="ACCELERATION" value={flight?.drone_id ? `${flight.acceleration_mps2.toFixed(2)} m/s²` : "— m/s²"} />
             <MetricRow label="HEADING" value={flight?.drone_id ? `${flight.heading_deg.toFixed(0)}°` : "—°"} />
+            <MetricRow label="PROXIMITY CLASS" value={flight?.drone_id ? `${proximity.label} · ${proximity.distanceMeters?.toFixed(0) ?? "—"} m` : "—"} />
+            <MetricRow label="EST. TIME TO ZONE" value={!flight?.drone_id ? "—" : proximity.nextBoundary ? `${proximity.nextBoundary} · ${formatProximityEta(proximity.etaSeconds)} · current track` : "INSIDE CRITICAL ZONE"} />
             <MetricRow label="DISTANCE TRAVELLED" value={flight?.drone_id ? `${flight.distance_travelled_m.toFixed(0)} m` : "— m"} />
             <MetricRow label="DISTANCE REMAINING" value={flight?.drone_id ? `${flight.distance_remaining_m.toFixed(0)} m` : "— m"} />
             <MetricRow label="TRAJECTORY DEVIATION" value={flight?.drone_id ? `${flight.trajectory_deviation_m.toFixed(1)} m` : "— m"} />
