@@ -186,6 +186,12 @@ export default function OpenWorldPage() {
   ]);
   const [proximity, setProximity] = useState(OUTSIDE_PROXIMITY);
   const lastProximity = useRef<{ scenarioId: string; zone: ProximityZone } | null>(null);
+  const [criticalWarning, setCriticalWarning] = useState<{ scenarioId: string; droneId: string } | null>(null);
+  const [criticalAcknowledged, setCriticalAcknowledged] = useState(false);
+  const [zoneNotice, setZoneNotice] = useState<{ zone: ProximityZone; label: string; id: number } | null>(null);
+  const [alarmAudioEnabled, setAlarmAudioEnabled] = useState(false);
+  const audioContext = useRef<AudioContext | null>(null);
+  const zoneNoticeId = useRef(0);
 
   const acceptFlightState = useCallback((state: FlightState, resetHistory = false) => {
     setFlight(state);
@@ -284,6 +290,9 @@ export default function OpenWorldPage() {
     if (!flight?.scenario_id || !flight.drone_id) {
       lastProximity.current = null;
       setProximity(OUTSIDE_PROXIMITY);
+      setCriticalWarning(null);
+      setCriticalAcknowledged(false);
+      setZoneNotice(null);
       return;
     }
 
@@ -292,15 +301,91 @@ export default function OpenWorldPage() {
     const next = estimateProximity(flight, destination, previousZone);
     setProximity(next);
     if (sameScenario && next.zone !== previousZone) {
+      if (next.zone === "critical") {
+        setCriticalWarning({ scenarioId: flight.scenario_id, droneId: flight.drone_id });
+        setCriticalAcknowledged(false);
+      } else if (previousZone === "critical") {
+        setCriticalWarning(null);
+        setCriticalAcknowledged(false);
+      }
+      if (next.zone !== "outside") {
+        setZoneNotice({ zone: next.zone, label: next.label, id: ++zoneNoticeId.current });
+      } else {
+        setZoneNotice(null);
+      }
+      const level = next.zone === "critical" ? "CRITICAL" : next.zone === "warning" ? "WARNING" : "DETECTION";
       const event = next.zone === "outside"
         ? `${flight.drone_id} exited the monitoring zones`
         : `${flight.drone_id} entered ${next.label.toLowerCase()} zone`;
-      recordWorldEvent(`PROXIMITY · ${event}`);
+      recordWorldEvent(`${level} · ${event}`);
     } else if (!sameScenario && next.zone !== "outside") {
-      recordWorldEvent(`PROXIMITY · ${flight.drone_id} spawned in ${next.label.toLowerCase()} zone`);
+      setZoneNotice({ zone: next.zone, label: next.label, id: ++zoneNoticeId.current });
+      if (next.zone === "critical") {
+        setCriticalWarning({ scenarioId: flight.scenario_id, droneId: flight.drone_id });
+        setCriticalAcknowledged(false);
+      }
+      const level = next.zone === "critical" ? "CRITICAL" : next.zone === "warning" ? "WARNING" : "DETECTION";
+      recordWorldEvent(`${level} · ${flight.drone_id} spawned in ${next.label.toLowerCase()} zone`);
+    } else if (!sameScenario) {
+      setCriticalWarning(null);
+      setCriticalAcknowledged(false);
+      setZoneNotice(null);
     }
     lastProximity.current = { scenarioId: flight.scenario_id, zone: next.zone };
   }, [destination, flight, recordWorldEvent]);
+
+  useEffect(() => {
+    if (!zoneNotice || zoneNotice.zone === "critical") return;
+    const timeout = window.setTimeout(() => setZoneNotice(null), 4_500);
+    return () => window.clearTimeout(timeout);
+  }, [zoneNotice]);
+
+  useEffect(() => () => {
+    void audioContext.current?.close();
+    audioContext.current = null;
+  }, []);
+
+  useEffect(() => {
+    const isCritical = Boolean(flight?.scenario_id && criticalWarning?.scenarioId === flight.scenario_id && proximity.zone === "critical");
+    const context = audioContext.current;
+    if (!isCritical || !alarmAudioEnabled || criticalAcknowledged || !context || context.state !== "running") return;
+
+    const playAlarmPulse = () => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const now = context.currentTime;
+      oscillator.type = "triangle";
+      oscillator.frequency.setValueAtTime(880, now);
+      oscillator.frequency.setValueAtTime(660, now + 0.16);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 0.36);
+    };
+
+    playAlarmPulse();
+    const interval = window.setInterval(playAlarmPulse, 1_100);
+    return () => window.clearInterval(interval);
+  }, [alarmAudioEnabled, criticalAcknowledged, criticalWarning, flight?.scenario_id, proximity.zone]);
+
+  const toggleAlarmAudio = async () => {
+    if (alarmAudioEnabled) {
+      setAlarmAudioEnabled(false);
+      return;
+    }
+    try {
+      const context = audioContext.current ?? new window.AudioContext();
+      audioContext.current = context;
+      await context.resume();
+      setAlarmAudioEnabled(true);
+    } catch {
+      setAlarmAudioEnabled(false);
+      recordWorldEvent("AUDIO · Local alarm unavailable; use the visual warning controls");
+    }
+  };
 
   const updateSeed = (text: string) => {
     setSeedText(text);
@@ -526,6 +611,32 @@ export default function OpenWorldPage() {
               proximity={proximity}
               onTerrainClick={handleTerrainClick}
             />
+            {zoneNotice && zoneNotice.zone !== "critical" && (
+              <div key={zoneNotice.id} className={`open-world-zone-notice zone-${zoneNotice.zone}`} role="status" aria-live="polite">
+                <span>{zoneNotice.zone === "warning" ? "WARNING" : "DRONE DETECTED"}</span>
+                <strong>{flight?.drone_id} · {zoneNotice.label}</strong>
+                <small>Synthetic simulation event</small>
+              </div>
+            )}
+            {criticalWarning && flight?.scenario_id === criticalWarning.scenarioId && proximity.zone === "critical" && (
+              <section className="open-world-critical-warning" role="alert" aria-live="assertive">
+                <div className="critical-warning-kicker">MAG-NULL · SYNTHETIC SIMULATION ALERT</div>
+                <h3>CRITICAL PROXIMITY WARNING</h3>
+                <div className="critical-warning-details">
+                  <span>DRONE</span><strong>{criticalWarning.droneId}</strong>
+                  <span>PROFILE</span><strong>{flight?.rf_profile.replaceAll("_", "-").toUpperCase()} (SIMULATED)</strong>
+                  <span>STATUS</span><strong>INNER ZONE ENTERED · {proximity.distanceMeters?.toFixed(0)} M FROM CENTER</strong>
+                  <span>EST. TO ZONE</span><strong>INSIDE CRITICAL ZONE</strong>
+                </div>
+                <p>IMMEDIATE ATTENTION REQUIRED · ESTIMATES ARE SIMULATION-DERIVED</p>
+                <div className="critical-warning-actions">
+                  <button type="button" onClick={() => void toggleAlarmAudio()}>{alarmAudioEnabled ? "MUTE ALARM AUDIO" : "ENABLE ALARM AUDIO"}</button>
+                  <button type="button" onClick={() => setCriticalAcknowledged(true)} disabled={criticalAcknowledged}>
+                    {criticalAcknowledged ? "ALARM ACKNOWLEDGED" : "ACKNOWLEDGE · SILENCE"}
+                  </button>
+                </div>
+              </section>
+            )}
             {destinationPicking && <div className="open-world-pick-hint">CLICK A TERRAIN POINT TO MOVE SAFE ZONE-01</div>}
             <div className="open-world-camera-tools" aria-label="Camera controls">
               <span className="camera-tool-hint">DRAG ORBIT · RIGHT-DRAG PAN · WHEEL ZOOM</span>
