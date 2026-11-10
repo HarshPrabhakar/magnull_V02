@@ -432,7 +432,10 @@ export default function OpenWorldPage() {
   };
 
   const setCameraView = (view: CameraCommand["view"]) => {
-    setCameraCommand((current) => ({ view, revision: current.revision + 1 }));
+    const target = view === "follow-drone" && flight?.drone_id
+      ? { x: flight.position.x, y: flight.position.y + 80, z: flight.position.z }
+      : undefined;
+    setCameraCommand((current) => ({ view, revision: current.revision + 1, target }));
   };
 
   const handleTerrainClick = useCallback((point: WorldPoint) => {
@@ -669,6 +672,7 @@ export default function OpenWorldPage() {
               <span className="camera-tool-hint">DRAG ORBIT · RIGHT-DRAG PAN · WHEEL ZOOM</span>
               <button type="button" onClick={() => setCameraView("overview")}>RESET VIEW</button>
               <button type="button" onClick={() => setCameraView("top-down")}>TOP-DOWN</button>
+              <button type="button" disabled={!flight?.drone_id} onClick={() => setCameraView("follow-drone")}>FOLLOW DRONE</button>
             </div>
             <div className="open-world-axis" aria-hidden="true">
               <span>N</span><i /><b>E</b>
