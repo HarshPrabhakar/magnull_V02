@@ -1128,6 +1128,44 @@
   border-top: 1px solid #182a38;
 }
 
+.open-world-spawn-variant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 9px 8px;
+  padding: 6px 7px;
+  color: #7693a4;
+  border: 1px solid #1b3040;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 8px;
+  letter-spacing: 0.45px;
+}
+
+.open-world-spawn-variant strong {
+  display: block;
+  margin-top: 3px;
+  color: #a3c1ce;
+  font-size: 9px;
+}
+
+.open-world-spawn-variant button {
+  min-height: 27px;
+  padding: 4px 7px;
+  color: #8ed6c9;
+  background: #07151a;
+  border: 1px solid #326d68;
+  font: inherit;
+  font-size: 7px;
+  cursor: pointer;
+}
+
+.open-world-spawn-variant button:disabled {
+  color: #536a72;
+  border-color: #263942;
+  cursor: default;
+}
+
 .open-world-metric-row {
   min-height: 26px;
   display: flex;
